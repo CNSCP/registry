@@ -32,18 +32,37 @@ export type Harness = {
   close: () => Promise<void>;
 };
 
-let port = 55432 + Math.floor(Math.random() * 2000);
+// Port allocation must survive PARALLEL test processes: `node --test` runs
+// each file in its own process, and a random port rolled independently by two
+// processes can collide — it did, on CI (EADDRINUSE, run #1). The pid keys the
+// base (two live processes never share one), and EADDRINUSE retries with a new
+// offset cover the rest.
+let attempt = 0;
+function candidatePort(): number {
+  return 30000 + ((process.pid * 97 + attempt++ * 131) % 25000);
+}
+
+async function startServer(db: PGlite): Promise<{ server: PGLiteSocketServer; port: number }> {
+  for (let tries = 0; tries < 20; tries++) {
+    const port = candidatePort();
+    // Default is one connection. node-pg-migrate holds one while it runs and
+    // the test pool wants another, so allow a few; queries are serialised onto
+    // the single PGlite instance regardless.
+    const server = new PGLiteSocketServer({ db, port, host: '127.0.0.1', maxConnections: 8 });
+    try {
+      await server.start();
+      return { server, port };
+    } catch (error) {
+      if (!String(error).includes('EADDRINUSE')) throw error;
+    }
+  }
+  throw new Error('no free port for the test database after 20 attempts');
+}
 
 /** Boot an empty database and apply every migration to it. */
 export async function freshDatabase(): Promise<Harness> {
   const db = await PGlite.create();
-  const myPort = port++;
-
-  // Default is one connection. node-pg-migrate holds one while it runs and the
-  // test pool wants another, so allow a few; queries are serialised onto the
-  // single PGlite instance regardless.
-  const server = new PGLiteSocketServer({ db, port: myPort, host: '127.0.0.1', maxConnections: 8 });
-  await server.start();
+  const { server, port: myPort } = await startServer(db);
 
   const connectionString = `postgres://postgres:postgres@127.0.0.1:${myPort}/postgres`;
 
