@@ -1,0 +1,42 @@
+{
+  "name": "@cnscp/registry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connection Profile Registry — Part One (allocation), the Profile model and serializations, and the Phase 0 import",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify-spec": "node scripts/verify-spec.mjs",
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "test:unit": "node --test --experimental-strip-types test/names.test.ts test/authorizes.test.ts test/policy-and-seed.test.ts test/serialization.test.ts test/spec2026.test.ts test/import.test.ts test/routes.test.ts",
+    "test:integration": "node --test --experimental-strip-types test/integration.test.ts test/profiles.integration.test.ts test/resolution.test.ts test/authoring.test.ts test/seam-isolation.test.ts test/mcp.test.ts",
+    "migrate": "node-pg-migrate -j js -m migrations",
+    "seed": "node --env-file-if-exists=.env --experimental-strip-types src/seed/run.ts",
+    "dev": "node --env-file-if-exists=.env --watch --experimental-strip-types src/server.ts",
+    "start": "node --env-file-if-exists=.env --experimental-strip-types src/server.ts",
+    "import": "node --env-file-if-exists=.env --experimental-strip-types src/seed/import-cli.ts",
+    "resolve": "node --env-file-if-exists=.env --experimental-strip-types src/resolution-server.ts",
+    "dev:resolve": "node --env-file-if-exists=.env --watch --experimental-strip-types src/resolution-server.ts",
+    "authoritative": "node --env-file-if-exists=.env --experimental-strip-types src/authoritative-server.ts",
+    "mcp": "node --env-file-if-exists=.env --experimental-strip-types src/mcp/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "fastify": "^5.2.0",
+    "pg": "^8.13.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "dotenv": "^17.4.2",
+    "node-pg-migrate": "^7.9.0",
+    "typescript": "^5.7.2"
+  }
+}

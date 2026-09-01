@@ -1,0 +1,101 @@
+# The authoritative host — cp.cnscp.io (§4.4).
+#
+# One Deployment serving the AUTHORITATIVE profile: every GET of §19 plus the
+# authoring verbs of §15, on one origin. Write verbs are bearer-token gated;
+# the resolution surface is public by design and answers "without regard to
+# the identity of the party presenting a name" (spec §9.3).
+#
+# Replicas: 2 for restarts-without-downtime. Both point at one Postgres —
+# publication serializes on a row lock (§13.4), so replicas are safe.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: cp-registry
+spec:
+  selector:
+    app: registry
+  ports:
+    - port: 80
+      targetPort: 8082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: cp-registry
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      containers:
+        - name: registry
+          image: ghcr.io/cnscp/registry:latest
+          ports:
+            - containerPort: 8082
+          env:
+            - name: BIND_HOST
+              value: '0.0.0.0'
+            - name: CP_PORT
+              value: '8082'
+            - name: CP_AUTHOR_KIND
+              value: 'agent'
+            - name: CP_AUTHOR_PRINCIPAL
+              value: 'anto@padi.io'
+            - name: CP_AUTHOR_SCOPES
+              value: 'draft:write,publish,deprecate,disclose'
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_PASSWORD } }
+            - name: DATABASE_URL
+              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/cp_registry'
+            - name: CP_AUTHOR_TOKEN
+              valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_TOKEN } }
+            - name: CP_AUTHOR_USER_ID
+              valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_USER_ID } }
+          readinessProbe:
+            httpGet: { path: /health, port: 8082 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8082 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+---
+# TLS and the hostname. cert-manager provisions the certificate; the
+# cluster-issuer name below is the common convention — adjust to whatever
+# issues cp.padi.io's certificate today.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: registry
+  namespace: cp-registry
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [cp.cnscp.io]
+      secretName: cp-cnscp-io-tls
+  rules:
+    - host: cp.cnscp.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: registry
+                port:
+                  number: 80

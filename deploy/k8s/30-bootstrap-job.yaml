@@ -1,0 +1,66 @@
+# The bootstrap — run ONCE, after Postgres is ready and before the Deployment
+# takes traffic. Everything in it is idempotent, so re-running is safe.
+#
+#   1. migrations           the six schema files
+#   2. seed                 the 30 allocations of §10.2, audited — MUST precede
+#                           the identity step, which joins the operator org
+#                           the seed creates
+#   3. author identity      the app_user + operator membership the authoring
+#                           credential acts as (prints the uuid for the secret)
+#   4. import               the 70 cp.padi.io records under §10.4
+#
+# NOTE the ordering wrinkle: step 2 prints CP_AUTHOR_USER_ID, which belongs in
+# the registry-auth secret that the Deployment reads. First deploy is
+# therefore: run this Job → read the uuid from its logs → create the secret →
+# roll out the Deployment. DEPLOY.md walks it.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: registry-bootstrap
+  namespace: cp-registry
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: ghcr.io/cnscp/registry:latest
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_PASSWORD } }
+            - name: DATABASE_URL
+              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/cp_registry'
+          command: ['/bin/sh', '-c']
+          args:
+            - |
+              set -e
+              echo '=== migrations ==='
+              npm run migrate up
+              echo '=== seed (§10.2) ==='
+              npm run seed
+              echo '=== author identity ==='
+              node --experimental-strip-types -e "
+                import('./src/db.ts').then(async ({ getPool, closePool }) => {
+                  const pool = getPool();
+                  const existing = await pool.query(
+                    \"SELECT id FROM app_user WHERE oidc_subject = 'local|anto'\");
+                  if (existing.rows[0]) {
+                    console.log('CP_AUTHOR_USER_ID=' + existing.rows[0].id + ' (existing)');
+                  } else {
+                    const u = await pool.query(
+                      \"INSERT INTO app_user (oidc_subject, email, display_name) VALUES ('local|anto', 'anto@padi.io', 'Anto Budiardjo') RETURNING id\");
+                    const m = await pool.query(
+                      \"INSERT INTO member (org_id, user_id, role) SELECT id, \$1, 'admin' FROM organization WHERE is_operator RETURNING user_id\", [u.rows[0].id]);
+                    if (!m.rows[0]) throw new Error('no operator organization — did the seed run?');
+                    console.log('CP_AUTHOR_USER_ID=' + u.rows[0].id);
+                  }
+                  await closePool();
+                });
+              "
+              echo '=== import (§10.4) ==='
+              npm run import -- --file test/fixtures/cp-padi-io-profiles.json
+              echo '=== done ==='

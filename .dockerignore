@@ -1,0 +1,10 @@
+node_modules
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+deploy
+.github
+test/*.test.ts
+test/support

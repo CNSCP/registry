@@ -1,0 +1,99 @@
+# CI for the Registry.
+#
+# Two test jobs, deliberately different:
+#   test        the full 332-test suite. Self-contained — the integration
+#               tests bring their own Postgres (PGlite, wasm PG18).
+#   postgres16  the one thing the suite cannot prove: migrations, seed, and
+#               the Phase 0 import against a REAL PostgreSQL 16, the version
+#               §23 targets. This is the CI closure of the PG18-vs-16 gap.
+#
+# On main, a green run builds the image and pushes ghcr.io/cnscp/registry.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run verify-spec   # SKIPs when the spec copy is absent, by design
+
+  postgres16:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: registry
+          POSTGRES_PASSWORD: registry
+          POSTGRES_DB: cp_registry
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://registry:registry@localhost:5432/cp_registry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Migrate against real PostgreSQL 16
+        run: npm run migrate up
+      - name: Seed the §10.2 bootstrap
+        run: npm run seed
+      - name: Run the §10.4 import
+        run: npm run import -- --file test/fixtures/cp-padi-io-profiles.json
+      - name: The import is idempotent — a second run changes nothing
+        run: |
+          npm run import -- --file test/fixtures/cp-padi-io-profiles.json | tee second-run.log
+          grep -q "0 versions published" second-run.log
+      - name: The audit chain is intact
+        run: |
+          node --experimental-strip-types -e "
+            import('./src/db.ts').then(async ({ getPool, closePool }) => {
+              const { verify } = await import('./src/audit.ts');
+              const broken = await verify(getPool());
+              if (broken) { console.error('chain broken:', broken); process.exit(1); }
+              console.log('audit chain intact');
+              await closePool();
+            });
+          "
+
+  publish:
+    needs: [test, postgres16]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/cnscp/registry:latest
+            ghcr.io/cnscp/registry:${{ github.sha }}
