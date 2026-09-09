@@ -20,7 +20,6 @@
  *   CP_AUTHOR_KIND       human | service | agent          (default: agent)
  *   CP_AUTHOR_PRINCIPAL  the human behind a non-human actor (§4.3)
  *   CP_AUTHOR_SCOPES     comma-separated                  (default: draft:write)
- *   CP_OPERATED_REALMS   comma-separated Realms the owner operates (§13.3)
  */
 
 import Fastify from 'fastify';
@@ -37,7 +36,11 @@ if (!token || !userId) {
 
 const kind = (process.env['CP_AUTHOR_KIND'] ?? 'agent') as Credential['kind'];
 const principal = process.env['CP_AUTHOR_PRINCIPAL'];
-const scopes = (process.env['CP_AUTHOR_SCOPES'] ?? 'draft:write').split(',').map((s) => s.trim()) as Scope[];
+// Unknown scope strings (e.g. a leftover 'disclose' from before the 8 Sept
+// revision removed the Registry's disclosure act) are dropped, not fatal.
+const KNOWN: Scope[] = ['draft:write', 'publish', 'deprecate'];
+const scopes = (process.env['CP_AUTHOR_SCOPES'] ?? 'draft:write')
+  .split(',').map((s) => s.trim()).filter((s): s is Scope => (KNOWN as string[]).includes(s));
 
 const credential: Credential = {
   token,
@@ -54,7 +57,6 @@ await registerAuthoringRoutes(app, {
   pool,
   ownership: new PgOwnershipStore(pool),
   credentials: [credential],
-  operatedRealms: (process.env['CP_OPERATED_REALMS'] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 });
 await registerResolutionRoutes(app, { db: pool, html: process.env['RENDER_HTML'] !== 'false' });
 

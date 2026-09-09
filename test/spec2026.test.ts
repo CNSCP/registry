@@ -21,6 +21,7 @@ import { parseProfileVersion, serializeProfileVersion, parseYesNo, yesNo } from 
 import {
   REQUIRED_HEADER_FIELDS,
   checkProfileVersion,
+  duplicatePropertyNames,
   missingHeaderFields,
   summarize,
 } from '../src/profile/conformance.ts';
@@ -52,6 +53,7 @@ const WORKED_EXAMPLE = {
         Name: 'state',
         Mandatory: 'yes',
         Propagate: 'yes',
+        Default: '0',
         Description: 'The desired light level as a fraction, 0 to 1; 0 is off, 1 is fully on.',
         Sample: '0.75',
       },
@@ -160,22 +162,26 @@ describe('Version is an integer rendered as a string (§6.2, §6.6)', () => {
     assert.equal(typeof out.Header['Version'], 'string');
   });
 
-  test('an absent Version means Draft and is not defaulted to 1 (§6.4)', () => {
+  test('an absent Version means Unpublished and is not defaulted to 1 (§6.2)', () => {
     const { Version: _v, 'Pub Date': _p, ...rest } = WORKED_EXAMPLE.Header;
-    const doc = { Header: { ...rest, Status: 'Draft' }, Properties: {} };
+    const doc = { Header: { ...rest, Status: 'Unpublished' }, Properties: {} };
     const profile = parseProfileVersion(doc as never);
     assert.equal(profile.version, undefined);
     const out = serializeProfileVersion({ ...profile, versions: [{ properties: [] }] }) as {
       Header: Record<string, unknown>;
     };
-    assert.ok(!('Version' in out.Header), 'a Draft must not be given a version number');
+    assert.ok(!('Version' in out.Header), 'an unpublished form must not be given a version number');
   });
 
-  test('an unknown Status is refused', () => {
-    const doc = { Header: { ...WORKED_EXAMPLE.Header, Status: 'Active' }, Properties: {} };
-    // "Active" is the 2022 draft's value; the 2026 revision has Draft /
-    // Published / Deprecated. Accepting it would silently import stale state.
-    assert.throws(() => parseProfileVersion(doc as never), /expected one of Draft, Published, Deprecated/);
+  test('superseded Status vocabularies are refused BY NAME', () => {
+    // "Active" is the 2022 draft; "Draft" is the 26 Aug 2026 draft, renamed
+    // Unpublished on 8 Sept. Accepting either would silently import stale
+    // lifecycle state; both fail with their provenance in the message.
+    const active = { Header: { ...WORKED_EXAMPLE.Header, Status: 'Active' }, Properties: {} };
+    assert.throws(() => parseProfileVersion(active as never), /2022-draft value/);
+
+    const draft = { Header: { ...WORKED_EXAMPLE.Header, Status: 'Draft' }, Properties: {} };
+    assert.throws(() => parseProfileVersion(draft as never), /renamed "Unpublished"/);
   });
 });
 
@@ -400,14 +406,142 @@ describe('the positive case', () => {
     }
   });
 
-  test('a Draft is excused Version and Pub Date, and nothing else (§6.4)', () => {
-    const draft: Profile = { ...conformingProfile(), status: 'Draft' };
-    delete draft.version;
-    delete draft.pubDate;
-    assert.deepEqual(missingHeaderFields(draft), []);
+  test('an Unpublished form is excused Version and Pub Date, and nothing else (§6.2)', () => {
+    const unpublished: Profile = { ...conformingProfile(), status: 'Unpublished' };
+    delete unpublished.version;
+    delete unpublished.pubDate;
+    assert.deepEqual(missingHeaderFields(unpublished), []);
 
-    // The same absences without Draft status are findings.
-    const notDraft: Profile = { ...draft, status: 'Published' };
-    assert.deepEqual(missingHeaderFields(notDraft).sort(), ['Pub Date', 'Version']);
+    // The same absences on a Published status are findings.
+    const published: Profile = { ...unpublished, status: 'Published' };
+    assert.deepEqual(missingHeaderFields(published).sort(), ['Pub Date', 'Version']);
+  });
+});
+
+/** Spec §6.8's second example, transcribed exactly — the Channels anchor. */
+const CAMERA_EXAMPLE = {
+  Header: {
+    'Name': 'example.camera',
+    'Version': '1',
+    'Pub Date': '2026-09-01',
+    'Status': 'Published',
+    'Owner': 'Example Profiles Organization',
+    'Title': 'Camera Feed',
+    'Provider': 'Camera',
+    'Consumer': 'Viewer',
+    'Description':
+      'Connects a camera to a viewer. The Provider reports its state and carries its video; the Consumer controls the session and receives the video.',
+    'Website': 'https://profiles.example.org/camera/1',
+  },
+  Properties: {
+    Provider: [
+      {
+        Name: 'state',
+        Mandatory: 'yes',
+        Propagate: 'yes',
+        Default: 'idle',
+        Description: "The camera's state: idle, streaming, or fault.",
+        Sample: 'streaming',
+      },
+    ],
+    Consumer: [],
+  },
+  Channels: [
+    {
+      Name: 'control',
+      Mode: 'stream',
+      Protocol: 'rtsp',
+      'Provider Role': 'server',
+      'Consumer Role': 'client',
+      Description: 'Session control: RTSP over an ordered byte stream.',
+    },
+    {
+      Name: 'media',
+      Mode: 'datagram',
+      Protocol: 'rtp',
+      'Provider Role': 'sender',
+      'Consumer Role': 'receiver',
+      Description: "The camera's video. Timing is deployment-dependent (§6.5).",
+    },
+  ],
+};
+
+describe('Channels — the §6.8 camera example (8 Sept revision)', () => {
+  test('parses, with both Channels and their role mappings', () => {
+    const profile = parseProfileVersion(CAMERA_EXAMPLE as never);
+    const version = profile.versions![0]!;
+    assert.equal(version.properties.length, 1);
+    assert.equal(version.channels!.length, 2);
+
+    const control = version.channels![0]!;
+    assert.equal(control.mode, 'stream');
+    assert.equal(control.protocol, 'rtsp');
+    assert.equal(control.providerRole, 'server');
+    assert.equal(control.consumerRole, 'client');
+
+    const media = version.channels![1]!;
+    assert.equal(media.mode, 'datagram');
+    assert.equal(media.protocol, 'rtp');
+  });
+
+  test('round-trips byte for byte', () => {
+    const reserialized = serializeProfileVersion(parseProfileVersion(CAMERA_EXAMPLE as never));
+    assert.deepEqual(reserialized, CAMERA_EXAMPLE);
+    assert.equal(JSON.stringify(reserialized), JSON.stringify(CAMERA_EXAMPLE));
+  });
+
+  test('the Default attribute survives, and its absence is preserved as absence', () => {
+    const profile = parseProfileVersion(CAMERA_EXAMPLE as never);
+    assert.equal(profile.versions![0]!.properties[0]!.default, 'idle');
+
+    const light = parseProfileVersion(WORKED_EXAMPLE as never);
+    const color = light.versions![0]!.properties.find((p) => p.name === 'color')!;
+    assert.equal(color.default, undefined, 'no Default means no value until delivered — not ""');
+  });
+
+  test('an invalid Mode is refused with the three legal ones named', () => {
+    const doc = JSON.parse(JSON.stringify(CAMERA_EXAMPLE));
+    doc.Channels[0].Mode = 'unreliable-stream';
+    // "There is no unreliable stream: without message boundaries a lost
+    // segment leaves the remainder unparseable" (§6.5).
+    assert.throws(() => parseProfileVersion(doc as never), /stream, message, datagram/);
+  });
+
+  test('a Channel without Protocol or Description is refused', () => {
+    for (const drop of ['Protocol', 'Description']) {
+      const doc = JSON.parse(JSON.stringify(CAMERA_EXAMPLE));
+      delete doc.Channels[1][drop];
+      assert.throws(() => parseProfileVersion(doc as never), new RegExp(`Channel has no ${drop}`));
+    }
+  });
+
+  test('Properties and Channels share one name space (§6.4, §6.5)', () => {
+    const profile = parseProfileVersion(CAMERA_EXAMPLE as never);
+    const clash = JSON.parse(JSON.stringify(CAMERA_EXAMPLE));
+    clash.Channels[0].Name = 'state'; // collides with the Property
+    const parsed = parseProfileVersion(clash as never);
+    const dupes = duplicatePropertyNames(parsed.versions![0]!);
+    assert.deepEqual(dupes, ['state']);
+    // And the clean document has none.
+    assert.deepEqual(duplicatePropertyNames(profile.versions![0]!), []);
+  });
+
+  test('a Consumer with no Properties is valid — the minimum is one per Profile, not one per role', () => {
+    const report = checkProfileVersion(parseProfileVersion(CAMERA_EXAMPLE as never), 0);
+    assert.equal(report.conforms, false, 'example.* is spec-reserved, so only that finding is expected');
+    assert.deepEqual(report.findings.map((f) => f.kind), ['prefix-reserved']);
+  });
+
+  test('a Profile with NO Properties is non-conforming, Channels or not (§6.4, §9.4)', () => {
+    const doc = JSON.parse(JSON.stringify(CAMERA_EXAMPLE));
+    doc.Properties.Provider = [];
+    const report = checkProfileVersion(parseProfileVersion(doc as never), 0);
+    assert.ok(report.findings.some((f) => f.kind === 'no-properties'),
+      'a Channel alone gives the Governor nothing to see');
+  });
+
+  test('a Profile with no Channels omits the key — pre-Channels documents stay valid (§6.5)', () => {
+    const out = serializeProfileVersion(parseProfileVersion(WORKED_EXAMPLE as never));
+    assert.ok(!('Channels' in out));
   });
 });

@@ -11,16 +11,21 @@
  * published version carries is a new contract, publishable only under a new
  * name (spec §7.7).
  *
- * The comparison runs against the HIGHEST published version. That suffices
- * because additivity is transitive: every published version was additive over
- * its predecessor, so a Draft additive over version N is additive over all of
- * 1..N. (The spec draws the same consequence — "any two versions of one
- * Profile are compatible in what they require".)
+ * §6.2 measures the rule "against every prior published version", and
+ * `checkAdditivityAgainstAll` is that, literally. A single-prior check against
+ * the highest would suffice when every prior publication was itself gated —
+ * additivity is transitive — but the literal form also holds when it wasn't
+ * (a grandfathered import, a migrated database), and the corpus is small.
  *
  * "Redefined" means the parts of a Property that participate in the contract:
- * NAME, supplying ROLE, MANDATORY, and PROPAGATE (design §13.4). Description
- * and Sample are documentary — §6.3: "this specification takes no view of
- * them" — so changing them redefines nothing.
+ * NAME, supplying ROLE, MANDATORY, PROPAGATE, and DEFAULT (spec §6.2, 8 Sept
+ * revision). Description and Sample are documentary — §6.4: "this
+ * specification takes no view of them" — so changing them redefines nothing.
+ *
+ * CHANNELS ARE STRICTER STILL (§6.2): "a Profile's Channels are fixed by its
+ * first published version" — a later version can neither add, remove, nor
+ * redefine one. A Property a Node does not use can be ignored; an open
+ * Channel nobody speaks on is indistinguishable from a broken one.
  *
  * Findings follow §15.1: structured and actionable, naming the gate, the
  * offending element, and the rule. An agent must be able to act on a refusal
@@ -46,7 +51,7 @@ export type AdditivityFinding =
       property: string;
       prior_version: number;
       /** Which contract-bearing attribute moved, with both values. */
-      attribute: 'role' | 'mandatory' | 'propagate';
+      attribute: 'role' | 'mandatory' | 'propagate' | 'default';
       was: string | boolean;
       now: string | boolean;
       message: string;
@@ -61,6 +66,13 @@ export type AdditivityFinding =
       code: 'additivity.duplicate_property_name';
       gate: 'additivity';
       property: string;
+      message: string;
+    }
+  | {
+      code: 'additivity.channel_added' | 'additivity.channel_removed' | 'additivity.channel_redefined';
+      gate: 'additivity';
+      channel: string;
+      prior_version: number;
       message: string;
     };
 
@@ -122,9 +134,9 @@ export function checkAdditivity(
       // fixes exactly what moved.
       const redefinitions: [AdditivityFinding & { code: 'additivity.property_redefined' }][] = [];
       const check = (
-        attribute: 'role' | 'mandatory' | 'propagate',
-        was: string | boolean,
-        now: string | boolean,
+        attribute: 'role' | 'mandatory' | 'propagate' | 'default',
+        was: string | boolean | undefined,
+        now: string | boolean | undefined,
       ) => {
         if (was !== now) {
           findings.push({
@@ -133,8 +145,8 @@ export function checkAdditivity(
             property: before.name,
             prior_version: priorVersionNumber,
             attribute,
-            was,
-            now,
+            was: was ?? '(absent)',
+            now: now ?? '(absent)',
             message: `Property "${before.name}" has ${attribute}=${String(was)} in version ${priorVersionNumber} and ${String(now)} in the candidate. A version SHALL NOT redefine any Property (spec §6.2); the flag is fixed by publication (spec §6.3).`,
           });
         }
@@ -144,6 +156,10 @@ export function checkAdditivity(
       check('role', before.role, after.role);
       check('mandatory', before.mandatory, after.mandatory);
       check('propagate', before.propagate, after.propagate);
+      // Default is contract, not documentary (§6.2, §6.4): where defined it is
+      // the value a Connection starts with at Bind, and absent is a different
+      // contract from any present value.
+      check('default', before.default, after.default);
 
       // Documentary drift is legal and worth surfacing — §6.3 takes no view of
       // Description and Sample, so these block nothing.
@@ -152,6 +168,51 @@ export function checkAdditivity(
       }
       if ((before.sample ?? null) !== (after.sample ?? null)) {
         documentaryChanges.push({ property: before.name, attribute: 'sample' });
+      }
+    }
+
+    // Channels are fixed by the FIRST published version (§6.2): no additions,
+    // no removals, no redefinition of any attribute — including the
+    // documentary ones, since "what a Channel's protocol requires" is exactly
+    // what its Description and role mappings state.
+    const candidateChannels = new Map((candidate.channels ?? []).map((c) => [c.name, c]));
+    for (const before of prior.channels ?? []) {
+      const after = candidateChannels.get(before.name);
+      if (!after) {
+        findings.push({
+          code: 'additivity.channel_removed',
+          gate: 'additivity',
+          channel: before.name,
+          prior_version: priorVersionNumber,
+          message: `Channel "${before.name}" exists in version ${priorVersionNumber} and is absent from the candidate. A Profile's Channels are fixed by its first published version (spec §6.2); a different set of Channels is a new contract and takes a new name (spec §7.7).`,
+        });
+        continue;
+      }
+      const moved =
+        before.mode !== after.mode ||
+        before.protocol !== after.protocol ||
+        (before.providerRole ?? null) !== (after.providerRole ?? null) ||
+        (before.consumerRole ?? null) !== (after.consumerRole ?? null);
+      if (moved) {
+        findings.push({
+          code: 'additivity.channel_redefined',
+          gate: 'additivity',
+          channel: before.name,
+          prior_version: priorVersionNumber,
+          message: `Channel "${before.name}" differs from version ${priorVersionNumber} in mode, protocol, or role mapping. A version SHALL NOT redefine a Channel (spec §6.2).`,
+        });
+      }
+    }
+    const priorChannelNames = new Set((prior.channels ?? []).map((c) => c.name));
+    for (const channel of candidate.channels ?? []) {
+      if (!priorChannelNames.has(channel.name)) {
+        findings.push({
+          code: 'additivity.channel_added',
+          gate: 'additivity',
+          channel: channel.name,
+          prior_version: priorVersionNumber,
+          message: `Channel "${channel.name}" is new in the candidate. A version SHALL NOT add a Channel: an open Channel nobody speaks on is indistinguishable from a broken one (spec §6.2).`,
+        });
       }
     }
 
@@ -172,4 +233,39 @@ export function checkAdditivity(
   }
 
   return { additive: findings.length === 0, findings, documentaryChanges };
+}
+
+/**
+ * The literal form of spec §6.2: the candidate measured against EVERY prior
+ * published version, deduplicating identical findings across priors so an
+ * agent sees each problem once, attributed to the earliest version that
+ * establishes it.
+ */
+export function checkAdditivityAgainstAll(
+  candidate: ProfileVersion,
+  priors: { version: number; content: ProfileVersion }[],
+): AdditivityResult {
+  if (priors.length === 0) return checkAdditivity(candidate, null, 0);
+
+  const merged: AdditivityFinding[] = [];
+  const seen = new Set<string>();
+  let documentaryChanges: AdditivityResult['documentaryChanges'] = [];
+
+  for (const prior of [...priors].sort((a, b) => a.version - b.version)) {
+    const result = checkAdditivity(candidate, prior.content, prior.version);
+    for (const finding of result.findings) {
+      const key = `${finding.code}:${'property' in finding ? finding.property : finding.channel}${
+        'attribute' in finding ? ':' + finding.attribute : ''
+      }`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(finding);
+      }
+    }
+    // Documentary drift reported against the highest prior only — the one an
+    // author actually diffed their draft against.
+    documentaryChanges = result.documentaryChanges;
+  }
+
+  return { additive: merged.length === 0, findings: merged, documentaryChanges };
 }

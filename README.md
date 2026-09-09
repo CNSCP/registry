@@ -1,14 +1,17 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`../REGISTRY-DESIGN.md`](../REGISTRY-DESIGN.md) v0.5.
+Design: [`../REGISTRY-DESIGN.md`](../REGISTRY-DESIGN.md) v0.6.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
-by hash — `bbeec3f7…22be09b`, assembled 26 August 2026 — and `npm run verify-spec` checks
-that the copy beside the design document is still that one. The public repository at
-`github.com/CNSCP/specification` carries the **2022** draft, which this code does not
-follow: different section numbering, different Status values, `"Source"` on each Property,
-and no Propagate attribute. `spec2026.ts` refuses `"Status": "Active"` for that reason.
+by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
+checks that the copy beside the design document is still that one. When the anchor moves,
+the check fails until the design and code are re-read against the new revision; it did
+exactly that on 9 September, and design §24.5 records what the re-read changed (the
+Unpublished rename, the Registry holding no unpublished content, Channels, Default). The
+public repository at `github.com/CNSCP/specification` carries the **2022** draft, which
+this code does not follow; `spec2026.ts` refuses both superseded Status vocabularies
+("Active" from 2022, "Draft" from the 26 Aug 2026 draft) by name.
 
 ## What this is, and what it deliberately is not
 
@@ -51,26 +54,26 @@ other people deploy:
 Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publication path:
 
 - The full lifecycle by HTTP method on the same paths resolution reads:
-  `PUT /<name>` registers, `PUT /<name>:draft` shapes, `POST /<name>/publish` freezes,
-  `POST :n/deprecate`, `PATCH :n/header` (Owner/Website only), `DELETE` discards unpublished
+  `PUT /<name>` registers (the name, and nothing else), `POST /<name>/publish` carries the
+  document in its body and freezes it — **the Registry holds no unpublished content**
+  (8 Sept spec §7.3) — `POST :n/deprecate`, `PATCH :n/header` (Owner/Website only),
+  `DELETE` releases a never-published name
 - **The additivity gate** (§23 priority 2): removal, redefinition, and mandatory additions
   refused with structured `{ code, gate, property, ... }` findings an agent can act on
 - `?dry_run=true` runs every gate and provably writes nothing
-- Credential scopes `draft:write · publish · deprecate · disclose` (§15.2) — a machine
-  author holds `draft:write` alone: the whole of the work, none of the damage
-- The disclosure trapdoor with its confirmation challenge: a non-operated Realm returns
-  409 until the caller sends `confirm_public: true`, and the flip is irreversible
+- Credential scopes `draft:write · publish · deprecate` (§15.2) — a machine author holds
+  `draft:write` alone; the disclosure act left the Registry with the 8 Sept revision
 
 The MCP server ([`src/mcp/server.ts`](src/mcp/server.ts)) — §15.1's "worth building early",
 since hand-authoring by an assistant is the Phase 0 publication path:
 
-- Eleven tools over the authoring verbs, run with `npm run mcp` (stdio); configure with
+- Eight tools over the authoring verbs, run with `npm run mcp` (stdio); configure with
   `CP_REGISTRY_URL` and `CP_REGISTRY_TOKEN` — the token's scopes decide what the tools may do
 - Deliberately THIN: an HTTP client of the same API every other client uses (§4.4 — no
   privileged path), so every gate and audit write happens exactly once
-- Registry refusals pass through verbatim as structured findings; the two irreversible acts
-  say IRREVERSIBLE in their descriptions, and `authorize_realm` tells the assistant to never
-  confirm public disclosure on its own judgment
+- Registry refusals pass through verbatim as structured findings; `publish` says IRREVERSIBLE
+  in its description, and the working document lives with the assistant — check_publishable
+  and publish carry it as a parameter, per the 8 Sept revision
 - `npm run authoritative` starts the combined authoring+resolution host it talks to
 
 Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, reads and edits keep
@@ -80,13 +83,13 @@ that says what still works. An outage is never reported as a denial.
 
 And Part Two's storage layer (§12), enough to hold what the import produces:
 
-- `profile` and `profile_version`, with the Draft on the profile row and **no status column**
-  — status belongs to a version (spec §6.4), and a name with no versions is a legitimate state
+- `profile` and `profile_version`, with **no status column and no content columns on
+  profile** — status belongs to a version, and the Registry cannot hold unpublished content
+  because the columns for it do not exist (8 Sept spec §7.3; migration 6 dropped them)
 - **The narrow immutability trigger** (§23 priority 3) — content, hash, bytes and version
   frozen; `status` moves published → deprecated one way; `Owner` and `Website` stay mutable
   because spec §6.4 permits it and forbidding them is the opposite non-conformance
 - Version assignment under a row lock — max+1, assigned by the Registry, never by the author
-- The disclosure trapdoor as a database trigger: once public, no path walks it back
 
 **Not built, and not stubbed** — Phase 2 (§25): applications, verification challenges,
 renewal, redemption, transfers, disputes, and the whole §9.2 operator plane. A route that
@@ -100,7 +103,7 @@ does not exist in the codebase — its absence is the enforcement.
 
 ```sh
 npm install
-npm test                  # 332 tests: 183 unit + 149 against a real Postgres
+npm test                  # 340 tests: 187 unit + 153 against a real Postgres
 npm run test:unit         # the pure logic, milliseconds
 npm run test:integration  # migrations, triggers, constraints, the hash chain
 npm run typecheck

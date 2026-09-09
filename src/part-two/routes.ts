@@ -14,11 +14,12 @@
  *   - dry_run on publish, running every gate and changing nothing
  *   - idempotent writes; registration is naturally idempotent on the name
  *
- * CREDENTIAL SCOPES (§15.2). Part Two has exactly two irreversible acts —
- * publication, and disclosure to public — so credentials are scoped
- * `draft:write · publish · deprecate · disclose`, and a machine author
- * normally holds draft:write alone: the whole of the work, none of the damage.
- * §23 priority 7 is the test that this holds under every endpoint.
+ * CREDENTIAL SCOPES (§15.2). Publication is the one irreversible act left on
+ * this surface — the 8 Sept revision moved unpublished content and its
+ * disclosure out of the Registry (spec §7.3) — so credentials are scoped
+ * `draft:write · publish · deprecate`, and a machine author normally holds
+ * draft:write alone: registration, release and stewardship, none of the
+ * permanence. §23 priority 7 is the test that this holds under every endpoint.
  */
 
 import { timingSafeEqual } from 'node:crypto';
@@ -29,14 +30,17 @@ import { record } from '../audit.ts';
 import { nameProblem } from '../names.ts';
 import { authorizes } from '../part-one/authorizes.ts';
 import type { OwnershipStore } from '../part-one/types.ts';
-import { checkAdditivity } from '../profile/additivity.ts';
+import { checkAdditivityAgainstAll } from '../profile/additivity.ts';
 import { missingHeaderFields, duplicatePropertyNames } from '../profile/conformance.ts';
 import type { Profile, ProfileVersion } from '../profile/model.ts';
 import { parseProfileVersion } from '../profile/spec2026.ts';
 import { publishVersion, registerName, deprecateVersion, updateStewardship } from '../profile/store.ts';
 import { splitReference } from '../part-three/routes.ts';
 
-export type Scope = 'draft:write' | 'publish' | 'deprecate' | 'disclose';
+// 'disclose' existed while the Registry held unpublished content; the 8 Sept
+// revision moved that content (and its disclosure) out of the Registry
+// entirely (spec §7.3), so the scope went with it.
+export type Scope = 'draft:write' | 'publish' | 'deprecate';
 
 export type Credential = {
   /** The bearer token value. */
@@ -54,8 +58,6 @@ export type AuthoringDeps = {
   ownership: OwnershipStore;
   /** Phase 0: a static credential table. OIDC and issuance are Phase 2. */
   credentials: Credential[];
-  /** The list of Realms the owner operates — the trapdoor's boundary (§13.3). */
-  operatedRealms?: string[];
 };
 
 type Authed = { credential: Credential };
@@ -76,7 +78,6 @@ function structuredError(
 
 export async function registerAuthoringRoutes(app: FastifyInstance, deps: AuthoringDeps): Promise<void> {
   const { pool, ownership, credentials } = deps;
-  const operatedRealms = new Set(deps.operatedRealms ?? []);
 
   for (const credential of credentials) {
     if (credential.token.length < 32) throw new Error('authoring credentials must be at least 32 characters');
@@ -205,11 +206,9 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   async function profileRow(name: string) {
     const { rows } = await pool.query<{
       id: string;
-      draft_content: unknown;
-      draft_disclosure: 'private' | 'authorized' | 'public';
       discarded_at: Date | null;
     }>(
-      `SELECT id, draft_content, draft_disclosure, discarded_at FROM profile WHERE name = $1`,
+      `SELECT id, discarded_at FROM profile WHERE name = $1`,
       [name],
     );
     const row = rows[0];
@@ -229,8 +228,10 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
 
     const { name, version } = splitReference(request.params.ref);
 
-    if (version === 'draft') return putDraft(name, request.body, authed, reply);
-
+    if (version === 'unpublished') {
+      return structuredError(reply, 405, 'unpublished.not_held', 'registration',
+        'The Registry does not hold unpublished content (spec §7.3): your working copy lives with you, and enters the Registry only as the payload of POST /' + name + '/publish.');
+    }
     if (version !== null) {
       return structuredError(reply, 405, 'method.not_registrable', 'grammar',
         'A version is created by publication, never by PUT (spec §6.2).');
@@ -320,57 +321,15 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
     return reply.code(204).send();
   });
 
-  // --- the Draft write (§13.2) ----------------------------------------------
+  // --- POST /<name>/publish — the single act, WITH PAYLOAD (§13.4). ---------
   //
-  // "Mutable without restriction" (spec §6.2): no gate runs here. The Draft is
-  // not a contract, and — while private — visible to no one else, which is
-  // exactly the property an autonomous author needs (§15.1). The gates run at
-  // publication, and dry_run lets an agent rehearse them at any time.
+  // 8 Sept revision, §7.3: "Publication is the act by which a Profile's
+  // content ENTERS the Registry" — the Registry SHALL NOT hold unpublished
+  // content, so the document arrives in the request body, is checked, and is
+  // either frozen or refused with nothing retained. The author's workspace is
+  // the author's own; the Registry sees content only at this moment.
 
-  async function putDraft(name: string, body: unknown, authed: Authed, reply: FastifyReply): Promise<unknown> {
-    if (nameProblem(name)) {
-      return structuredError(reply, 400, 'grammar.name', 'grammar', `"${name}" is not a Profile name.`);
-    }
-    const authz = await authorizeEdit(reply, authed.credential, name);
-    if (!authz) return;
-
-    const row = await profileRow(name);
-    if (!row) {
-      return structuredError(reply, 404, 'registration.not_found', 'registration',
-        `"${name}" is not registered. PUT /${name} first — registration claims the name and creates the Draft (§13.1).`);
-    }
-    if (body === undefined || body === null) {
-      return structuredError(reply, 400, 'draft.body_required', 'draft', 'Send the Draft content as the request body.');
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(
-        `UPDATE profile SET draft_content = $2::jsonb, draft_modified = now() WHERE id = $1`,
-        [row.id, JSON.stringify(body)],
-      );
-      await record(client, {
-        actor: authed.credential.userId, actor_kind: authed.credential.kind,
-        principal: authed.credential.principal ?? null,
-        action: 'profile.draft', subject_type: 'profile', subject_id: row.id,
-        after: { name, draft_modified: true },
-        rationale: null,
-      });
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-
-    return reply.send({ name, draft: 'updated', note: 'The Draft is not a contract; publish when ready (§13.4).' });
-  }
-
-  // --- POST /<name>/publish — the single act (§13.4). -----------------------
-
-  app.post<{ Params: { ref: string }; Querystring: { dry_run?: string } }>(
+  app.post<{ Params: { ref: string }; Querystring: { dry_run?: string }; Body: unknown }>(
     '/:ref/publish',
     async (request, reply) => {
       const authed = requireScope(request, reply, 'publish');
@@ -388,58 +347,71 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       if (!row) {
         return structuredError(reply, 404, 'registration.not_found', 'registration', `"${name}" is not registered.`);
       }
-      if (row.draft_content === null || row.draft_content === undefined) {
-        return structuredError(reply, 409, 'draft.empty', 'draft', 'The Draft is empty; there is nothing to publish.');
+
+      const body = request.body;
+      if (body === undefined || body === null || typeof body !== 'object') {
+        return structuredError(reply, 400, 'publish.payload_required', 'shape',
+          'Publication carries the content: send the full 2026-shape document as the request body (spec §7.3). The Registry holds no unpublished content to publish from.');
       }
 
-      // Parse the Draft as a 2026-shape document.
+      // Parse the payload as a 2026-shape document.
       let profile: Profile;
       try {
-        profile = parseProfileVersion(row.draft_content as never, name);
+        profile = parseProfileVersion(body as never, name);
       } catch (error) {
-        return structuredError(reply, 422, 'draft.malformed', 'shape', (error as Error).message);
+        return structuredError(reply, 422, 'publish.malformed', 'shape', (error as Error).message);
       }
       if (profile.name !== name) {
         return structuredError(reply, 422, 'header.name_mismatch', 'header',
-          `The Draft's Header.Name is "${profile.name}"; it SHALL match the registered name "${name}" (spec §6.4).`);
+          `The document's Header.Name is "${profile.name}"; it SHALL match the registered name "${name}" (spec §6.6, §7.3).`);
       }
       const content: ProfileVersion = profile.versions![0]!;
 
-      // --- The Registry gates (§14) — the only grounds for refusal. ---------
+      // --- The Registry gates (§14, spec §7.3) — the only grounds for refusal.
       const findings: unknown[] = [];
 
-      // Header completeness (spec §6.4, §9.4). Version/PubDate/Status are the
+      // Header completeness (spec §6.6, §9.4). Version/PubDate/Status are the
       // Registry's to assign at publication, so only the authored fields gate.
-      const missing = missingHeaderFields({ ...profile, status: 'Draft' });
+      const missing = missingHeaderFields({ ...profile, status: 'Unpublished' });
       for (const field of missing) {
         if (field === 'Version' || field === 'Pub Date' || field === 'Status') continue;
         findings.push({ code: 'header.missing_field', gate: 'header', field,
-          message: `Header field "${field}" is REQUIRED (spec §6.4).` });
+          message: `Header field "${field}" is REQUIRED (spec §6.6).` });
       }
 
-      // Property-name uniqueness (spec §6.3, §9.4).
+      // At least one Property (spec §6.4, §7.3, §9.4).
+      if (content.properties.length === 0) {
+        findings.push({ code: 'properties.none', gate: 'properties',
+          message: 'A Profile consists of one or more named Properties (spec §6.4); a Connection must be observable through its Properties even when Channels carry the traffic.' });
+      }
+
+      // One name space for Properties and Channels (spec §6.4, §6.5, §9.4).
       for (const dupe of duplicatePropertyNames(content)) {
         findings.push({ code: 'properties.duplicate_name', gate: 'properties', property: dupe,
-          message: `"${dupe}" appears in both roles or twice; names are unique across both roles (spec §6.3).` });
+          message: `"${dupe}" appears more than once; Properties and Channels share one name space (spec §6.4, §6.5).` });
       }
 
-      // Additivity, where prior versions exist (spec §6.2, §23 priority 2).
-      const prior = await pool.query<{ version: number; content: unknown }>(
+      // Additivity, against EVERY prior published version (spec §6.2).
+      const priors = await pool.query<{ version: number; content: unknown }>(
         `SELECT v.version, v.content FROM profile_version v JOIN profile p ON p.id = v.profile_id
-          WHERE p.name = $1 ORDER BY v.version DESC LIMIT 1`,
+          WHERE p.name = $1 ORDER BY v.version`,
         [name],
       );
-      if (prior.rows[0]) {
-        const priorProfile = parseProfileVersion(prior.rows[0].content as never);
-        const result = checkAdditivity(content, priorProfile.versions![0]!, prior.rows[0].version);
-        findings.push(...result.findings);
-      }
+      const priorContents = priors.rows.map((r) => ({
+        version: r.version,
+        content: parseProfileVersion(r.content as never).versions![0]!,
+      }));
+      const result = checkAdditivityAgainstAll(content, priorContents);
+      findings.push(...result.findings);
 
+      const highestPrior = priors.rows.at(-1)?.version ?? 0;
       const dryRun = request.query.dry_run === 'true';
+
       if (findings.length > 0) {
+        // "What fails it does not publish, and it retains nothing of it" (§7.3).
         return reply.code(422).send({
           publishable: false, dry_run: dryRun, name, findings,
-          message: 'The Draft cannot be published as the next version. Nothing has changed.',
+          message: 'The document cannot be published as the next version. Nothing has changed, and nothing was retained.',
         });
       }
 
@@ -447,8 +419,8 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
         // Every gate has run; nothing is written. §23 priority 7 proves it.
         return reply.code(200).send({
           publishable: true, dry_run: true, name,
-          would_assign_version: (prior.rows[0]?.version ?? 0) + 1,
-          message: 'The Draft would publish. Nothing has changed.',
+          would_assign_version: highestPrior + 1,
+          message: 'The document would publish. Nothing has changed, and nothing was retained.',
         });
       }
 
@@ -457,13 +429,13 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
         await client.query('BEGIN');
         const published = await publishVersion(client, actorOf(authed.credential), {
           profileId: row.id, name, profile, content,
-          rationale: 'Published through the authoring API (§15).',
+          rationale: 'Published through the authoring API (§15); content carried in the publication itself (spec §7.3).',
         });
         await client.query('COMMIT');
         return reply.code(201).send({
           name, version: published.version, content_hash: published.contentHash,
           href: `/${name}:${published.version}`,
-          note: 'The version is immutable and the name is now permanent (spec §6.2, §7.3). The Draft persists as your workspace.',
+          note: 'The version is immutable and the name is now permanent (spec §6.2, §7.3). Your working copy remains yours; the Registry holds only what was published.',
         });
       } catch (error) {
         await client.query('ROLLBACK');
@@ -554,75 +526,4 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
     },
   );
 
-  // --- POST /<name>:draft/disclosure — the trapdoor (§13.3). ----------------
-
-  app.post<{ Params: { ref: string }; Body: { realm?: string; confirm_public?: boolean } }>(
-    '/:ref/disclosure',
-    async (request, reply) => {
-      const authed = requireScope(request, reply, 'disclose');
-      if (!authed) return;
-
-      const { name, version } = splitReference(request.params.ref);
-      if (version !== 'draft') {
-        return structuredError(reply, 400, 'grammar.draft', 'grammar', 'Disclosure addresses the Draft.');
-      }
-      const realm = request.body?.realm;
-      if (!realm || typeof realm !== 'string') {
-        return structuredError(reply, 400, 'disclosure.realm_required', 'disclosure', 'Name the Realm to authorize.');
-      }
-
-      const authz = await authorizeEdit(reply, authed.credential, name);
-      if (!authz) return;
-      const row = await profileRow(name);
-      if (!row) return structuredError(reply, 404, 'registration.not_found', 'registration', `"${name}" is not registered.`);
-
-      const operated = operatedRealms.has(realm);
-
-      if (!operated && request.body?.confirm_public !== true) {
-        // The confirmation challenge (§15). Accepting makes the Draft public to
-        // everyone, irreversibly — the API demands the caller say so.
-        return reply.code(409).send({
-          code: 'disclosure.confirmation_required', gate: 'disclosure',
-          message:
-            `"${realm}" is not on your operated-Realms list. Authorizing it makes the Draft of "${name}" ` +
-            `answerable to ANY party thereafter, irreversibly (spec §7.3). ` +
-            `Repeat the request with confirm_public: true to proceed.`,
-          irreversible: true,
-        });
-      }
-
-      const target = operated ? 'authorized' : 'public';
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        // The trapdoor trigger enforces irreversibility; this only moves forward.
-        await client.query(
-          `UPDATE profile SET draft_disclosure = $2::draft_disclosure WHERE id = $1
-             AND draft_disclosure <> 'public'`,
-          [row.id, target],
-        );
-        await record(client, {
-          actor: authed.credential.userId, actor_kind: authed.credential.kind,
-          principal: authed.credential.principal ?? null,
-          action: 'profile.disclose', subject_type: 'profile', subject_id: row.id,
-          after: { name, realm, disclosure: row.draft_disclosure === 'public' ? 'public' : target },
-          rationale: operated
-            ? `Realm "${realm}" is operated by the owner; disclosure is scoped (§13.3).`
-            : `Realm "${realm}" is not operated by the owner. Sharing is disclosure: the Draft is public to any party, irreversibly (spec §7.3).`,
-        });
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-
-      return reply.send({
-        name, realm,
-        disclosure: row.draft_disclosure === 'public' ? 'public' : target,
-        ...(target === 'public' ? { irreversible: true } : {}),
-      });
-    },
-  );
 }

@@ -131,19 +131,23 @@ describe('references (spec §7.2)', () => {
       tlp: 'acme',
       version: 2,
     });
-    assert.deepEqual(parseReference('cp:acme.meter.flow:draft'), {
+    assert.deepEqual(parseReference('cp:acme.meter.flow:unpublished'), {
       kind: 'profile',
       name: 'acme.meter.flow',
       tlp: 'acme',
-      version: 'draft',
+      version: 'unpublished',
     });
   });
 
-  test('integers and the reserved token `draft` never collide', () => {
+  test('integers and the reserved token `unpublished` never collide', () => {
     const asInteger = parseReference('cp:a.b:12');
-    const asDraft = parseReference('cp:a.b:draft');
+    const asUnpublished = parseReference('cp:a.b:unpublished');
     assert.equal(asInteger.kind === 'profile' && asInteger.version, 12);
-    assert.equal(asDraft.kind === 'profile' && asDraft.version, 'draft');
+    assert.equal(asUnpublished.kind === 'profile' && asUnpublished.version, 'unpublished');
+  });
+
+  test('the 26 Aug token `draft` is refused with a pointer to the rename', () => {
+    assert.throws(() => parseReference('cp:a.b:draft'), /renamed in the September 2026 revision/);
   });
 
   test('uppercase CP: is documentary and is refused, not folded', () => {

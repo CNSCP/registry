@@ -32,11 +32,15 @@ import { fileURLToPath } from 'node:url';
 
 const EXPECTED = {
   file: 'cnscp_2026_spec_clean_read_s1-10.md',
-  sha256: 'bbeec3f74a87230c3f1144370cce3f9ec24e989c9a5931fbb4923efcc22be09b',
-  bytes: 88501,
-  assembled: '26 August 2026',
-  sections: '§1 v0.5, §2 v0.3, §3 v0.6, §4 v0.4, §5 v0.7, §6 v0.5, §7 v0.5, §8 v0.6, §9 v0.6, §10 v0.3',
+  sha256: '442043a7c0306f2f9f44a9e923f027a85a02c716baeb130171c6a4b038a712c8',
+  bytes: 134887,
+  assembled: '8 September 2026',
+  sections: '§1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18',
 };
+// Prior anchor, for the record: bbeec3f7…22be09b (26 Aug 2026, 88,501 bytes),
+// archived beside the design doc as cnscp_2026_spec_clean_read_s1-10_20260826.md.
+// The re-read that moved this pin: Unpublished rename, Registry-holds-no-
+// unpublished-content, Channels, Default — design v0.6 records the deltas.
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The spec sits beside the design document, one level above this repository.

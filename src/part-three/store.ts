@@ -46,26 +46,25 @@ export type RegisteredName = {
   name: string;
   registered_at: Date;
   imported_from: string | null;
-  draft_disclosure: 'private' | 'authorized' | 'public';
   versions: VersionSummary[];
 };
 
 /**
- * Everything about a registered name except its Draft content.
+ * A registered name and its published versions — which is everything the
+ * Registry knows: unpublished content lives with its author (spec §7.3).
  *
- * Spec §7.3 makes the EXISTENCE of a registration public even where the content
- * is not — "a name long registered but never published can be seen for what it
- * is" — so this answers for a name with zero versions too.
+ * The EXISTENCE of a registration is public — "a name long registered but
+ * never published can be seen for what it is" — so this answers for a name
+ * with zero versions too.
  */
 export async function resolveName(db: Queryable, name: string): Promise<RegisteredName | null> {
   const { rows } = await db.query<{
     name: string;
     registered_at: Date;
     imported_from: string | null;
-    draft_disclosure: RegisteredName['draft_disclosure'];
     discarded_at: Date | null;
   }>(
-    `SELECT name, registered_at, imported_from, draft_disclosure, discarded_at
+    `SELECT name, registered_at, imported_from, discarded_at
        FROM profile WHERE name = $1`,
     [name],
   );
@@ -88,7 +87,6 @@ export async function resolveName(db: Queryable, name: string): Promise<Register
     name: profile.name,
     registered_at: profile.registered_at,
     imported_from: profile.imported_from,
-    draft_disclosure: profile.draft_disclosure,
     versions: versions.rows,
   };
 }
@@ -110,25 +108,6 @@ export async function resolveVersion(
     [name, version],
   );
   return rows[0] ?? null;
-}
-
-/** Draft content. The caller decides entitlement (§13.3); this only fetches. */
-export async function resolveDraft(
-  db: Queryable,
-  name: string,
-): Promise<{ content: unknown; disclosure: RegisteredName['draft_disclosure']; modified: Date | null } | null> {
-  const { rows } = await db.query<{
-    draft_content: unknown;
-    draft_disclosure: RegisteredName['draft_disclosure'];
-    draft_modified: Date | null;
-  }>(
-    `SELECT draft_content, draft_disclosure, draft_modified
-       FROM profile WHERE name = $1 AND discarded_at IS NULL`,
-    [name],
-  );
-  const row = rows[0];
-  if (!row || row.draft_content === null) return null;
-  return { content: row.draft_content, disclosure: row.draft_disclosure, modified: row.draft_modified };
 }
 
 /**

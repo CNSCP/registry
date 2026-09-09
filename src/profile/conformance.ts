@@ -46,6 +46,8 @@ export type ConformanceFinding =
   | { kind: 'missing-header-field'; field: HeaderField; detail: string }
   | { kind: 'missing-property-attribute'; property: string; attribute: string; detail: string }
   | { kind: 'duplicate-property-name'; property: string; detail: string }
+  | { kind: 'no-properties'; detail: string }
+  | { kind: 'channel-invalid'; channel: string; detail: string }
   | { kind: 'name-invalid'; detail: string }
   | { kind: 'prefix-reserved'; detail: string };
 
@@ -58,18 +60,20 @@ export type ConformanceReport = {
 /**
  * Which REQUIRED Header fields does this Profile lack?
  *
- * `Version` and `Pub Date` are exempt for a Draft: spec §6.4 says of both that
- * "the Draft carries none". A Draft is not thereby a conforming *published*
- * Profile — it is not a contract at all (§6.2) — so absence of those two is
- * only excused when Status actually says Draft.
+ * `Version` and `Pub Date` are exempt while Unpublished: both are assigned at
+ * publication (spec §6.2, §6.6), so an unpublished form cannot carry them.
+ * §9.4 makes the same point from the other side: "an Unpublished Profile is a
+ * registered name whose content has not yet been checked, and it claims
+ * nothing" — this function's verdict on one is advisory, never a conformance
+ * claim.
  */
 export function missingHeaderFields(profile: Profile): HeaderField[] {
-  const isDraft = profile.status === 'Draft';
+  const isUnpublished = profile.status === 'Unpublished';
 
   const present: Record<HeaderField, boolean> = {
     'Name': profile.name !== undefined && profile.name !== '',
-    'Version': isDraft || profile.version !== undefined,
-    'Pub Date': isDraft || profile.pubDate !== undefined,
+    'Version': isUnpublished || profile.version !== undefined,
+    'Pub Date': isUnpublished || profile.pubDate !== undefined,
     'Status': profile.status !== undefined,
     'Owner': profile.owner !== undefined,
     'Title': profile.title !== undefined,
@@ -83,9 +87,10 @@ export function missingHeaderFields(profile: Profile): HeaderField[] {
 }
 
 /**
- * Spec §6.3: "A Property's name SHALL be unique within its Profile, across
- * both roles." Across BOTH roles — a `uri` supplied by the Provider and a
- * `uri` supplied by the Consumer is a violation, not two namespaces.
+ * Spec §6.4 (8 Sept revision): "A Property's name SHALL be unique within its
+ * Profile, across both roles AND AMONG THE PROFILE'S CHANNELS: Properties and
+ * Channels share one name space" — because a Node addresses what a Connection
+ * carries by name, whichever kind of thing it is.
  */
 export function duplicatePropertyNames(version: ProfileVersion): string[] {
   const seen = new Set<string>();
@@ -93,6 +98,10 @@ export function duplicatePropertyNames(version: ProfileVersion): string[] {
   for (const property of version.properties) {
     if (seen.has(property.name)) duplicates.add(property.name);
     seen.add(property.name);
+  }
+  for (const channel of version.channels ?? []) {
+    if (seen.has(channel.name)) duplicates.add(channel.name);
+    seen.add(channel.name);
   }
   return [...duplicates];
 }
@@ -135,23 +144,48 @@ export function checkProfileVersion(
     }
   }
 
-  // §9.4: "carries every REQUIRED Header field (§6.4)".
+  // §9.4: "carries every REQUIRED Header field (§6.6)".
   for (const field of missingHeaderFields(profile)) {
     findings.push({
       kind: 'missing-header-field',
       field,
-      detail: `Header field "${field}" is REQUIRED (§6.4) and absent`,
+      detail: `Header field "${field}" is REQUIRED (§6.6) and absent`,
     });
   }
 
   const version = (profile.versions ?? [])[versionIndex];
   if (version) {
+    // §9.4 (8 Sept revision): "has at least one Property … whether or not it
+    // declares Channels". A Channel alone would give the Governor nothing to
+    // see and the counterpart nothing to read before the Channel carries.
+    if (version.properties.length === 0) {
+      findings.push({
+        kind: 'no-properties',
+        detail:
+          'A Profile consists of one or more named Properties (§6.4, §9.4); a Connection must be observable through its Properties even when Channels carry the traffic',
+      });
+    }
+
     for (const name of duplicatePropertyNames(version)) {
       findings.push({
         kind: 'duplicate-property-name',
         property: name,
-        detail: `"${name}" appears more than once; names are unique across BOTH roles (§6.3)`,
+        detail: `"${name}" appears more than once; Properties and Channels share one name space (§6.4, §6.5)`,
       });
+    }
+
+    // §9.4: each Channel with the attributes §6.5 requires, and no latency or
+    // throughput declared. Mode/Protocol/Description presence is enforced by
+    // the parser; what remains checkable here is the performance-claim ban.
+    for (const channel of version.channels ?? []) {
+      const text = `${channel.description} ${channel.protocol}`.toLowerCase();
+      if (/\b(latency|throughput)\s*[:=<>]?\s*\d/.test(text)) {
+        findings.push({
+          kind: 'channel-invalid',
+          channel: channel.name,
+          detail: `Channel "${channel.name}" appears to declare latency or throughput; those are properties of a deployment, not terms of a contract (§6.5)`,
+        });
+      }
     }
 
     if (options.requireSample) {
@@ -161,7 +195,7 @@ export function checkProfileVersion(
             kind: 'missing-property-attribute',
             property: property.name,
             attribute: 'Sample',
-            detail: `Property "${property.name}" carries no Sample (§6.3)`,
+            detail: `Property "${property.name}" carries no Sample (§6.4)`,
           });
         }
       }

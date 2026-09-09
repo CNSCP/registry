@@ -88,12 +88,11 @@ describe('registration (§12.1)', () => {
     });
     assert.ok(profile.id);
 
-    const { rows } = await db.query<{ registered_at: Date; draft_disclosure: string }>(
-      `SELECT registered_at, draft_disclosure FROM profile WHERE id = $1`,
+    const { rows } = await db.query<{ registered_at: Date }>(
+      `SELECT registered_at FROM profile WHERE id = $1`,
       [profile.id],
     );
     assert.equal(rows[0]!.registered_at.toISOString(), '2024-01-15T00:00:00.000Z');
-    assert.equal(rows[0]!.draft_disclosure, 'private', 'a new Draft is private by default');
   });
 
   test('a name is unique — one Profile per name', async () => {
@@ -315,43 +314,22 @@ describe('IMMUTABILITY — §23 priority 3, spec §9.3', () => {
   });
 });
 
-describe('the Draft (§12.1, §13.3)', () => {
+describe('the registered-but-unpublished state (§12.1, 8 Sept §6.3)', () => {
   let profileId: string;
 
   before(async () => {
     const allocationId = await allocationFor('padi');
-    const profile = await registerName(db, ACTOR, {
-      name: 'padi.draft-test',
-      allocationId,
-      draftContent: { Header: { Name: 'padi.draft-test' } },
-    });
+    const profile = await registerName(db, ACTOR, { name: 'padi.draft-test', allocationId });
     profileId = profile.id;
   });
 
-  test('a Draft is mutable without restriction (spec §6.2)', async () => {
-    for (const revision of [1, 2, 3]) {
-      await db.query(
-        `UPDATE profile SET draft_content = $2, draft_modified = now() WHERE id = $1`,
-        [profileId, JSON.stringify({ revision })],
-      );
-    }
-    const { rows } = await db.query<{ draft_content: { revision: number } }>(
-      `SELECT draft_content FROM profile WHERE id = $1`,
-      [profileId],
+  test('the schema CANNOT hold unpublished content — the columns are gone (8 Sept §7.3)', async () => {
+    // The strongest possible form of "SHALL NOT hold": not policy, absence.
+    void profileId;
+    const message = await refused(() =>
+      db.query(`UPDATE profile SET draft_content = '{}'::jsonb WHERE id = $1`, [profileId]),
     );
-    assert.equal(rows[0]!.draft_content.revision, 3);
-  });
-
-  test('the disclosure trapdoor: public is irreversible (spec §7.3)', async () => {
-    await db.query(`UPDATE profile SET draft_disclosure = 'authorized' WHERE id = $1`, [profileId]);
-    await db.query(`UPDATE profile SET draft_disclosure = 'public' WHERE id = $1`, [profileId]);
-
-    for (const attempt of ['private', 'authorized']) {
-      const message = await refused(() =>
-        db.query(`UPDATE profile SET draft_disclosure = $2 WHERE id = $1`, [profileId, attempt]),
-      );
-      assert.match(message, /trapdoor/, `disclosure walked back to ${attempt}`);
-    }
+    assert.match(message, /column "draft_content" .* does not exist|column "draft_content" of relation/);
   });
 
   test('a Draft that never published may be discarded, releasing the name (spec §7.3)', async () => {

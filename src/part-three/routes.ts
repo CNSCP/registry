@@ -27,14 +27,12 @@ import { parseProfileVersion } from '../profile/spec2026.ts';
 import {
   namesBeginningWith,
   resolveAllocation,
-  resolveDraft,
   resolveName,
   resolveVersion,
   type ResolvedVersion,
 } from './store.ts';
 import {
   MEDIA,
-  draftHeaders,
   etagMatches,
   immutableVersionHeaders,
   negotiate,
@@ -50,13 +48,13 @@ export type ResolutionDeps = {
 };
 
 /** `acme.meter.flow:2` → name and version. The colon is the version separator. */
-export function splitReference(segment: string): { name: string; version: number | 'draft' | null } {
+export function splitReference(segment: string): { name: string; version: number | 'unpublished' | null } {
   const colon = segment.lastIndexOf(':');
   if (colon === -1) return { name: segment, version: null };
 
   const name = segment.slice(0, colon);
   const versionPart = segment.slice(colon + 1);
-  if (versionPart === 'draft') return { name, version: 'draft' };
+  if (versionPart === 'unpublished') return { name, version: 'unpublished' };
   if (/^[0-9]+$/.test(versionPart)) return { name, version: Number(versionPart) };
   return { name, version: NaN as unknown as number };
 }
@@ -141,7 +139,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     const { name, version } = splitReference(segment);
 
     if (Number.isNaN(version)) {
-      return reply.code(400).send({ error: 'a version is an integer or the reserved token "draft" (spec §7.2)' });
+      return reply.code(400).send({ error: 'a version is an integer or the reserved token "unpublished" (spec §7.2)' });
     }
 
     const problem = nameProblem(name);
@@ -152,7 +150,18 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     }
     if (problem) return reply.code(400).send({ error: `not a well-formed Profile name (${problem})` });
 
-    if (version === 'draft') return draft(name, representation, reply);
+    if (version === 'unpublished') {
+      // Spec §7.2: "a reference the Registry never resolves; only a Realm
+      // holding its content can". Spec §7.3, §9.3: the Registry SHALL NOT
+      // hold, serve, or answer for unpublished content — so this is not a
+      // permission question, and no credential changes the answer.
+      reply.code(404).header('cache-control', 'no-store');
+      return reply.send({
+        name,
+        resolvable: false,
+        note: 'An unpublished reference is never resolved by the Registry (spec §7.2, §7.3): its content lives with its author, and reaches a Realm only as the author conveys it.',
+      });
+    }
 
     const registered = await resolveName(db, name);
     if (!registered) return notFound(name, representation, reply);
@@ -204,6 +213,19 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     }
 
     if (representation === 'legacy') {
+      // The deployed shape has no place for Channels or Default (8 Sept
+      // revision). Omitting them would serve a changed contract — the exact
+      // hazard the goldens exist to catch — so a Channel-bearing version
+      // refuses legacy outright. Grandfathered and Channel-free versions
+      // keep serving it losslessly, so the deployed fleet is unaffected.
+      const document = resolved.content as { Channels?: unknown[] };
+      if (Array.isArray(document.Channels) && document.Channels.length > 0) {
+        return reply.code(406).type(MEDIA.legacy).send({
+          error: 'this version declares Channels, which the legacy serialization cannot carry without changing the contract',
+          use: MEDIA.spec2026,
+          href: `/${resolved.name}:${resolved.version}`,
+        });
+      }
       return reply.type(MEDIA.legacy).send(toLegacy(resolved));
     }
 
@@ -215,30 +237,6 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       return reply.type(MEDIA.spec2026).send(resolved.served_bytes.toString('utf8'));
     }
     return reply.type(MEDIA.spec2026).send(resolved.content);
-  }
-
-  async function draft(name: string, representation: Representation, reply: FastifyReply): Promise<unknown> {
-    const held = await resolveDraft(db, name);
-    applyHeaders(reply, draftHeaders());
-
-    // Spec §9.3: the Registry SHALL NOT answer inquiries for a Draft's content
-    // except as its owner authorizes, and SHALL answer them from any party once
-    // the owner has authorized a Realm it does not operate. This instance
-    // serves the anonymous read path, so only `public` is answerable here;
-    // `authorized` requires knowing WHICH Realm is asking, which is the
-    // authoritative host's business (§4.4).
-    if (!held || held.disclosure !== 'public') {
-      return reply.code(404).send({
-        error: 'no Draft is answerable for this name',
-        name,
-        note: 'A Draft is answered only as its owner authorizes (spec §7.3).',
-      });
-    }
-
-    if (representation === 'html' && renderHtml) {
-      return reply.type(MEDIA.html).send(renderDraft(name, held.content));
-    }
-    return reply.type(mediaTypeFor(representation === 'legacy' ? 'legacy' : 'spec2026')).send(held.content);
   }
 
   async function allocationPage(
@@ -414,15 +412,6 @@ function renderAllocation(body: {
     `<h1><code>cp:${escape(body.tlp)}</code></h1>
      <p>Held by ${escape(body.holder ?? 'the operator')}.</p>
      <table><tr><th>Name</th><th>Versions</th></tr>${rows}</table>`,
-  );
-}
-
-function renderDraft(name: string, content: unknown): string {
-  return page(
-    `${name}:draft`,
-    `<h1><code>cp:${escape(name)}:draft</code></h1>
-     <p><strong>This is a Draft.</strong> It may change at any time and is not a contract (spec §6.2).</p>
-     <pre>${escape(JSON.stringify(content, null, 2))}</pre>`,
   );
 }
 

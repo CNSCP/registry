@@ -91,7 +91,7 @@ describe('the dot rule (§19)', () => {
   test('the version separator is a colon within one path segment', () => {
     assert.deepEqual(splitReference('acme.meter.flow'), { name: 'acme.meter.flow', version: null });
     assert.deepEqual(splitReference('acme.meter.flow:2'), { name: 'acme.meter.flow', version: 2 });
-    assert.deepEqual(splitReference('acme.meter.flow:draft'), { name: 'acme.meter.flow', version: 'draft' });
+    assert.deepEqual(splitReference('acme.meter.flow:unpublished'), { name: 'acme.meter.flow', version: 'unpublished' });
   });
 
   test('sub-resources use a slash', async () => {
@@ -376,33 +376,25 @@ describe('what is NOT an index (§19.3)', () => {
   });
 });
 
-describe('Drafts (§13.3, spec §7.3)', () => {
-  test('a private Draft is not answerable on the public read path', async () => {
-    await db.query(
-      `UPDATE profile SET draft_content = '{"x":1}'::jsonb, draft_disclosure = 'private'
-        WHERE name = 'padi.tstat.basic'`,
-    );
-    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:draft' });
-    assert.equal(response.statusCode, 404);
-    assert.match(response.json().note, /only as its owner authorizes/);
+describe('unpublished content — never held, never served (8 Sept §7.3, §9.3)', () => {
+  test(':unpublished is never resolved, for any name, registered or not', async () => {
+    for (const url of ['/padi.tstat.basic:unpublished', '/no.such.name:unpublished']) {
+      const response = await app.inject({ method: 'GET', url });
+      assert.equal(response.statusCode, 404, url);
+      assert.equal(response.json().resolvable, false, url);
+      assert.match(response.json().note, /lives with its author/, url);
+    }
   });
 
-  test('an `authorized` Draft is not answerable here either — this instance does not know who is asking', async () => {
-    await db.query(`UPDATE profile SET draft_disclosure = 'authorized' WHERE name = 'padi.tstat.basic'`);
-    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:draft' });
-    assert.equal(response.statusCode, 404);
-  });
-
-  test('a `public` Draft is answerable to any party — the trapdoor has been walked', async () => {
-    await db.query(`UPDATE profile SET draft_disclosure = 'public' WHERE name = 'padi.tstat.basic'`);
-    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:draft' });
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), { x: 1 });
-  });
-
-  test('a Draft is never cached — it may change at any time (spec §7.4)', async () => {
-    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:draft' });
+  test('the answer is uncacheable — it is a statement about the Registry, not the content', async () => {
+    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:unpublished' });
     assert.equal(response.headers['cache-control'], 'no-store');
+  });
+
+  test('the old :draft token is a 400 with the rename named', async () => {
+    const response = await app.inject({ method: 'GET', url: '/padi.tstat.basic:draft' });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body, /unpublished/);
   });
 });
 

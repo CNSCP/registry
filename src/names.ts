@@ -5,7 +5,7 @@
  *                / "cp:" tlp
  *   name         = tlp 1*("." sub-segment)          ; two segments minimum
  *   tlp          = segment
- *   version-part = 1*DIGIT / "draft"
+ *   version-part = 1*DIGIT / "unpublished"
  *   segment      = 1*( %x61-7A / %x30-39 / "-" )
  *
  * Two rules from the specification are load-bearing here and easy to lose:
@@ -174,7 +174,7 @@ export function scopeCovers(scope: string, name: string): boolean {
 
 export type Reference =
   | { kind: 'allocation'; tlp: string }
-  | { kind: 'profile'; name: string; tlp: string; version: number | 'draft' | null };
+  | { kind: 'profile'; name: string; tlp: string; version: number | 'unpublished' | null };
 
 export class ReferenceError_ extends Error {
   readonly input: string;
@@ -192,10 +192,12 @@ export class ReferenceError_ extends Error {
  *   cp:acme               → the allocation held by Acme. Never a Profile.
  *   cp:acme.meter.flow    → a Profile name, version left to selection (spec §8.6)
  *   cp:acme.meter.flow:2  → published version 2
- *   cp:acme.meter.flow:draft → the Draft
+ *   cp:acme.meter.flow:unpublished → the unpublished Profile — a reference the
+ *                       Registry never resolves; only a Realm holding its
+ *                       content by the author's conveyance can (spec §7.2, §7.4)
  *
- * Integers and the reserved token `draft` can never collide, so the forms are
- * unambiguous. `CP:` is documentary and rejected.
+ * Integers and the reserved token `unpublished` can never collide, so the
+ * forms are unambiguous. `CP:` is documentary and rejected.
  */
 export function parseReference(input: string): Reference {
   if (input.startsWith('CP:')) {
@@ -231,10 +233,18 @@ export function parseReference(input: string): Reference {
   const problem = nameProblem(namePart);
   if (problem) fail(problem, namePart);
 
-  let version: number | 'draft' | null = null;
+  let version: number | 'unpublished' | null = null;
   if (versionPart !== null) {
-    if (versionPart === 'draft') {
-      version = 'draft';
+    if (versionPart === 'unpublished') {
+      version = 'unpublished';
+    } else if (versionPart === 'draft') {
+      // The 26 Aug draft's token, renamed in the 8 Sept revision. Refused with
+      // a pointer rather than silently aliased: the old token never deployed
+      // anywhere public, and an alias would keep it alive indefinitely.
+      throw new ReferenceError_(
+        input,
+        'the reserved token is "unpublished"; "draft" was renamed in the September 2026 revision (spec §7.2)',
+      );
     } else if (/^[0-9]+$/.test(versionPart)) {
       const n = Number(versionPart);
       if (n < 1) {
@@ -244,7 +254,7 @@ export function parseReference(input: string): Reference {
     } else {
       throw new ReferenceError_(
         input,
-        `has version part "${versionPart}"; a version is an integer or the reserved token "draft" (spec §7.2)`,
+        `has version part "${versionPart}"; a version is an integer or the reserved token "unpublished" (spec §7.2)`,
       );
     }
   }

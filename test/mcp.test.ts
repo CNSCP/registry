@@ -31,7 +31,7 @@ const AUTHOR: Credential = {
   userId: '',
   kind: 'agent',
   principal: 'anto@padi.io',
-  scopes: ['draft:write', 'publish', 'deprecate', 'disclose'],
+  scopes: ['draft:write', 'publish', 'deprecate'],
 };
 
 let harness: Harness;
@@ -80,7 +80,6 @@ before(async () => {
     pool: db,
     ownership: new PgOwnershipStore(db),
     credentials: [AUTHOR],
-    operatedRealms: ['padi-dev-realm'],
   });
   await registerResolutionRoutes(app, { db, html: false });
   const address = await app.listen({ port: 0, host: '127.0.0.1' });
@@ -111,18 +110,19 @@ describe('the toolset', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
-      'authorize_realm', 'check_publishable', 'check_registration', 'deprecate',
-      'discard_draft', 'publish', 'read_draft', 'register_name', 'resolve',
-      'update_stewardship', 'write_draft',
+      'check_publishable', 'check_registration', 'deprecate', 'publish',
+      'register_name', 'release_name', 'resolve', 'update_stewardship',
     ]);
   });
 
-  test('the irreversible acts say so in their descriptions — the description IS the documentation', async () => {
+  test('the irreversible act says so, and the tools teach the new architecture', async () => {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     assert.match(byName['publish']!.description ?? '', /IRREVERSIBLE/);
-    assert.match(byName['authorize_realm']!.description ?? '', /IRREVERSIBLE/i);
-    assert.match(byName['authorize_realm']!.description ?? '', /Never confirm on your own judgment/);
+    // The workspace moved out of the Registry (8 Sept §7.3), and the tool
+    // descriptions — the assistant's documentation — must say so.
+    assert.match(byName['check_publishable']!.description ?? '', /Registry holds no unpublished content/);
+    assert.match(byName['register_name']!.description ?? '', /holds no unpublished\s+content|working document stays with you/);
   });
 });
 
@@ -133,38 +133,35 @@ describe('an assistant authors a Profile end to end', () => {
     assert.equal((result.json as { registered: boolean }).registered, true);
   });
 
-  test('write the Draft', async () => {
-    const result = await tool('write_draft', {
-      name: 'padi.via-mcp',
-      document: {
-        Header: {
-          'Name': 'padi.via-mcp',
-          'Owner': 'Padi, Inc.',
-          'Title': 'Authored over MCP',
-          'Provider': 'Beacon',
-          'Consumer': 'Listener',
-          'Description': 'Written by an assistant through the MCP server.',
-          'Website': 'https://padi.io/via-mcp',
-        },
-        Properties: {
-          Provider: [{ Name: 'signal', Mandatory: 'yes', Propagate: 'yes', Description: 'The signal.' }],
-          Consumer: [],
-        },
-      },
-    });
-    assert.equal(result.isError, false, result.raw);
-  });
+  // The assistant's working document — held HERE, in the assistant's own
+  // space, exactly as 8 Sept §7.3 intends. The Registry sees it only inside
+  // check_publishable and publish calls.
+  const WORKING_DOCUMENT = {
+    Header: {
+      'Name': 'padi.via-mcp',
+      'Owner': 'Padi, Inc.',
+      'Title': 'Authored over MCP',
+      'Provider': 'Beacon',
+      'Consumer': 'Listener',
+      'Description': 'Written by an assistant through the MCP server.',
+      'Website': 'https://padi.io/via-mcp',
+    },
+    Properties: {
+      Provider: [{ Name: 'signal', Mandatory: 'yes', Propagate: 'yes', Description: 'The signal.' }],
+      Consumer: [],
+    },
+  };
 
-  test('rehearse — check_publishable reports publishable with nothing changed', async () => {
-    const result = await tool('check_publishable', { name: 'padi.via-mcp' });
+  test('rehearse — check_publishable carries the document and changes nothing', async () => {
+    const result = await tool('check_publishable', { name: 'padi.via-mcp', document: WORKING_DOCUMENT });
     assert.equal(result.isError, false, result.raw);
     const body = result.json as { publishable: boolean; would_assign_version: number };
     assert.equal(body.publishable, true);
     assert.equal(body.would_assign_version, 1);
   });
 
-  test('publish', async () => {
-    const result = await tool('publish', { name: 'padi.via-mcp' });
+  test('publish — the same document, the real act', async () => {
+    const result = await tool('publish', { name: 'padi.via-mcp', document: WORKING_DOCUMENT });
     assert.equal(result.isError, false, result.raw);
     assert.equal((result.json as { version: number }).version, 1);
   });
@@ -176,31 +173,21 @@ describe('an assistant authors a Profile end to end', () => {
   });
 
   test('a refusal comes back structured, for the assistant to act on', async () => {
-    // Break additivity: drop the mandatory property.
-    await tool('write_draft', {
-      name: 'padi.via-mcp',
-      document: {
-        Header: {
-          'Name': 'padi.via-mcp', 'Owner': 'Padi, Inc.', 'Title': 'Authored over MCP',
-          'Provider': 'Beacon', 'Consumer': 'Listener',
-          'Description': 'Reshaped.', 'Website': 'https://padi.io/via-mcp',
-        },
-        Properties: { Provider: [], Consumer: [] },
-      },
-    });
-    const result = await tool('check_publishable', { name: 'padi.via-mcp' });
+    // Break additivity: drop the mandatory property from the working document.
+    const reshaped = JSON.parse(JSON.stringify(WORKING_DOCUMENT));
+    reshaped.Properties.Provider = [];
+    const result = await tool('check_publishable', { name: 'padi.via-mcp', document: reshaped });
     assert.equal(result.isError, true, 'a 422 must surface as an error result');
-    const body = result.json as { findings: { code: string; property: string }[] };
-    assert.equal(body.findings[0]!.code, 'additivity.property_removed');
-    assert.equal(body.findings[0]!.property, 'signal');
+    const body = result.json as { findings: { code: string; property?: string }[] };
+    assert.ok(body.findings.some((f) => f.code === 'additivity.property_removed'));
+    assert.ok(body.findings.some((f) => f.code === 'properties.none'));
   });
 
-  test('the trapdoor challenge reaches the assistant verbatim', async () => {
-    const result = await tool('authorize_realm', { name: 'padi.via-mcp', realm: 'someone-elses-realm' });
+  test(':unpublished is never resolved, and the tool description said so', async () => {
+    const result = await tool('resolve', { reference: 'padi.via-mcp:unpublished' });
     assert.equal(result.isError, true);
-    const body = result.json as { code: string; irreversible: boolean };
-    assert.equal(body.code, 'disclosure.confirmation_required');
-    assert.equal(body.irreversible, true);
+    const body = result.json as { resolvable: boolean };
+    assert.equal(body.resolvable, false);
   });
 
   test('an unreachable Registry is reported, not thrown', async () => {

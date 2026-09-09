@@ -43,13 +43,13 @@ const AUTHOR: Credential = {
   token: 'author-'.padEnd(40, 'z'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate', 'disclose'],
+  scopes: ['draft:write', 'publish', 'deprecate'],
 };
 const STRANGER: Credential = {
   token: 'stranger-'.padEnd(40, 'q'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate', 'disclose'],
+  scopes: ['draft:write', 'publish', 'deprecate'],
 };
 
 const auth = (c: Credential) => ({ authorization: `Bearer ${c.token}` });
@@ -111,10 +111,8 @@ before(async () => {
   // publish version 1.
   const register = await healthy.inject({ method: 'PUT', url: '/padi.isolated', headers: auth(AUTHOR) });
   assert.equal(register.statusCode, 201);
-  const draft = await healthy.inject({
-    method: 'PUT',
-    url: '/padi.isolated:draft',
-    headers: auth(AUTHOR),
+  const published = await healthy.inject({
+    method: 'POST', url: '/padi.isolated/publish', headers: auth(AUTHOR),
     payload: {
       Header: {
         'Name': 'padi.isolated', 'Owner': 'Padi, Inc.', 'Title': 'Isolation test',
@@ -123,10 +121,6 @@ before(async () => {
       },
       Properties: { Provider: [{ Name: 'x', Mandatory: 'yes', Propagate: 'no', Description: 'd' }], Consumer: [] },
     },
-  });
-  assert.equal(draft.statusCode, 200);
-  const published = await healthy.inject({
-    method: 'POST', url: '/padi.isolated/publish', headers: auth(AUTHOR),
   });
   assert.equal(published.statusCode, 201);
 });
@@ -147,14 +141,6 @@ describe('with Part One down: reads', () => {
 });
 
 describe('with Part One down: edits keep working for the registrant', () => {
-  test('the registrant can keep shaping the Draft', async () => {
-    const response = await outage.inject({
-      method: 'PUT', url: '/padi.isolated:draft', headers: auth(AUTHOR),
-      payload: { Header: { Name: 'padi.isolated' }, Properties: { Provider: [], Consumer: [] } },
-    });
-    assert.equal(response.statusCode, 200, response.body);
-  });
-
   test('the registrant can deprecate during the outage', async () => {
     const response = await outage.inject({
       method: 'POST', url: '/padi.isolated:1/deprecate', headers: auth(AUTHOR),
@@ -174,8 +160,8 @@ describe('with Part One down: edits keep working for the registrant', () => {
     // A 403 would claim the seam answered "no". It did not answer at all, and
     // the response must say so rather than invent a denial.
     const response = await outage.inject({
-      method: 'PUT', url: '/padi.isolated:draft', headers: auth(STRANGER),
-      payload: { Header: { Name: 'padi.isolated' } },
+      method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(STRANGER),
+      payload: { Website: 'https://stranger.example' },
     });
     assert.equal(response.statusCode, 503);
     assert.equal(response.json().code, 'seam.unavailable');
@@ -191,8 +177,9 @@ describe('with Part One down: only registration and publication block (§4.1 rul
   });
 
   test('publication blocks the same way — dry_run included', async () => {
+    const payload = { Header: { Name: 'padi.isolated' }, Properties: { Provider: [], Consumer: [] } };
     for (const url of ['/padi.isolated/publish', '/padi.isolated/publish?dry_run=true']) {
-      const response = await outage.inject({ method: 'POST', url, headers: auth(AUTHOR) });
+      const response = await outage.inject({ method: 'POST', url, headers: auth(AUTHOR), payload });
       assert.equal(response.statusCode, 503, url);
       assert.equal(response.json().code, 'seam.unavailable', url);
     }
@@ -209,8 +196,8 @@ describe('with Part One down: only registration and publication block (§4.1 rul
 describe('the healthy path is unchanged by the fallback existing', () => {
   test('a stranger is refused by the SEAM (403), never by the local fallback', async () => {
     const response = await healthy.inject({
-      method: 'PUT', url: '/padi.isolated:draft', headers: auth(STRANGER),
-      payload: { Header: { Name: 'padi.isolated' } },
+      method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(STRANGER),
+      payload: { Website: 'https://stranger.example' },
     });
     assert.equal(response.statusCode, 403);
     assert.equal(response.json().gate, 'authorization');
@@ -222,8 +209,8 @@ describe('the healthy path is unchanged by the fallback existing', () => {
     // registered_by matching.
     await db.query(`DELETE FROM member WHERE user_id = $1`, [AUTHOR.userId]);
     const response = await healthy.inject({
-      method: 'PUT', url: '/padi.isolated:draft', headers: auth(AUTHOR),
-      payload: { Header: { Name: 'padi.isolated' } },
+      method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(AUTHOR),
+      payload: { Website: 'https://moved.example' },
     });
     assert.equal(response.statusCode, 403, 'the fallback must not widen the healthy path');
     // Restore.

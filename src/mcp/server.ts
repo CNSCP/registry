@@ -16,11 +16,13 @@
  * the seam design (§4.1) exists to prevent.
  *
  * What the assistant gets is the §15.1 contract: structured, actionable
- * rejections passed through verbatim; dry_run as a first-class tool so it can
- * converge on a publishable Draft without ever risking an irreversible act;
- * and the Draft as its safe workspace. The two irreversible acts — publish,
- * and disclosure to a non-operated Realm — are described as such in their tool
- * descriptions, because the tool description IS the assistant's documentation.
+ * rejections passed through verbatim, and dry_run as a first-class tool so it
+ * can converge on a publishable document without ever risking the one
+ * irreversible act. The workspace is the assistant's own files — the 8 Sept
+ * revision moved unpublished content out of the Registry (spec §7.3), so a
+ * document exists here only at the moment of (rehearsed or real) publication.
+ * Publication is described as IRREVERSIBLE in its tool description, because
+ * the tool description IS the assistant's documentation.
  *
  * Configuration (env):
  *   CP_REGISTRY_URL    the authoring host, e.g. http://127.0.0.1:8081
@@ -94,8 +96,9 @@ server.registerTool(
     title: 'Resolve a Profile, version, or allocation',
     description:
       'GET a reference from the Registry. A dotted name returns its published versions; ' +
-      '`name:2` returns that immutable version; `name:draft` returns the Draft where disclosure permits; ' +
-      'a single dotless segment returns the allocation page listing everything beneath that Prefix.',
+      '`name:2` returns that immutable version; a single dotless segment returns the allocation ' +
+      'page listing everything beneath that Prefix. `name:unpublished` is never resolved by the ' +
+      'Registry (spec §7.2): unpublished content lives with its author.',
     inputSchema: { reference: z.string().describe('e.g. "acme.meter.flow", "acme.meter.flow:2", or "acme"') },
   },
   async ({ reference }) => call('GET', `/${reference}`),
@@ -113,84 +116,70 @@ server.registerTool(
   async ({ name }) => call('GET', `/${name}/registration`),
 );
 
-// --- The workspace (draft:write) ---------------------------------------------
+// --- Registration and the working document ----------------------------------
 
 server.registerTool(
   'register_name',
   {
     title: 'Register a Profile name',
     description:
-      'Claims the name under its Prefix and creates the Draft (design §13.1). Idempotent: ' +
-      'registering a name you already hold is a no-op. Requires the owner\'s authorization ' +
-      'to exist for you (spec §7.3); a structured 403 explains any refusal. Registration is ' +
-      'NOT permanent — an unpublished Draft can be discarded, releasing the name.',
+      'Claims the name under its Prefix — and nothing else: the Registry holds no unpublished ' +
+      'content (spec §6.3, §7.3), so your working document stays with you until you publish it. ' +
+      'Idempotent: registering a name you already hold is a no-op. Requires the owner\'s ' +
+      'authorization to exist for you; a structured 403 explains any refusal. Registration is not ' +
+      'permanent — a never-published name can be released.',
     inputSchema: { name: z.string().describe('Two or more lowercase segments, e.g. "padi.meter.flow"') },
   },
   async ({ name }) => call('PUT', `/${name}`),
 );
 
-server.registerTool(
-  'write_draft',
-  {
-    title: 'Replace the Draft content',
-    description:
-      'The Draft is your safe workspace (spec §6.2): mutable without restriction, not a contract, ' +
-      'and — while private — visible to no one else. Generate, test, discard and regenerate as often ' +
-      'as the work requires; no gate runs here. Content is the 2026 document shape: ' +
-      '{ Header: { Name, Owner, Title, Provider, Consumer, Description, Website }, ' +
-      'Properties: { Provider: [...], Consumer: [...] } } with each Property carrying ' +
-      'Name, Mandatory ("yes"/"no"), Propagate ("yes"/"no"), Description, and optionally Sample. ' +
-      'Header.Name must equal the registered name. Version, Pub Date and Status are the ' +
-      'Registry\'s to assign — leave them out.',
-    inputSchema: {
-      name: z.string(),
-      document: z.record(z.string(), z.unknown()).describe('The full Draft document; replaces what is there'),
-    },
-  },
-  async ({ name, document }) => call('PUT', `/${name}:draft`, document),
-);
-
-server.registerTool(
-  'read_draft',
-  {
-    title: 'Read the Draft',
-    description: 'Fetches the current Draft content for a name you can see.',
-    inputSchema: { name: z.string() },
-  },
-  async ({ name }) => call('GET', `/${name}:draft`),
-);
+const DOCUMENT_SHAPE =
+  'The full 2026 document: { Header: { Name, Owner, Title, Provider, Consumer, Description, ' +
+  'Website }, Properties: { Provider: [...], Consumer: [...] }, Channels?: [...] }. Each Property ' +
+  'carries Name, Mandatory ("yes"/"no"), Propagate ("yes"/"no"), Description, and optionally ' +
+  'Default and Sample; each Channel carries Name, Mode (stream|message|datagram), Protocol, ' +
+  'Description, and where the protocol has roles, "Provider Role" and "Consumer Role". ' +
+  'Header.Name must equal the registered name; leave Version, Pub Date and Status out — the ' +
+  'Registry assigns them. Your working copy is YOURS: the Registry holds no unpublished content ' +
+  '(spec §7.3), so keep the document in your own files between calls.';
 
 server.registerTool(
   'check_publishable',
   {
     title: 'Dry-run publication — every gate, no changes',
     description:
-      'Runs the full set of publication gates (Header completeness per spec §6.4, property-name ' +
-      'uniqueness per §6.3, and additivity against the highest published version per §6.2) and ' +
-      'reports exactly what a real publish would do, changing NOTHING. Use this to converge on a ' +
-      'publishable Draft before ever risking the irreversible act. Findings are structured: each ' +
-      'names its gate, the offending element, and the rule. Requires the publish scope, since it ' +
-      'rehearses publication.',
-    inputSchema: { name: z.string() },
+      'Sends the document through the full set of publication gates (Header completeness §6.6, ' +
+      'at least one Property and one shared name space with Channels §6.4–§6.5, additivity against ' +
+      'every prior published version §6.2) and reports exactly what a real publish would do, ' +
+      'changing NOTHING and retaining nothing. Converge here before risking the irreversible act. ' +
+      'Findings are structured: each names its gate, the offending element, and the rule. ' +
+      DOCUMENT_SHAPE,
+    inputSchema: {
+      name: z.string(),
+      document: z.record(z.string(), z.unknown()).describe('The full document to rehearse'),
+    },
   },
-  async ({ name }) => call('POST', `/${name}/publish?dry_run=true`),
+  async ({ name, document }) => call('POST', `/${name}/publish?dry_run=true`, document),
 );
 
-// --- The irreversible acts (publish · disclose) ------------------------------
+// --- The irreversible act -----------------------------------------------------
 
 server.registerTool(
   'publish',
   {
-    title: 'Publish the Draft as the next version — IRREVERSIBLE',
+    title: 'Publish the document as the next version — IRREVERSIBLE',
     description:
-      'IRREVERSIBLE. Freezes the Draft\'s content as a numbered, immutable version and makes the name ' +
+      'IRREVERSIBLE. Freezes the document as a numbered, immutable version and makes the name ' +
       'permanent (spec §6.2, §7.3). A published version can NEVER be altered or deleted; a bad contract, ' +
       'published, is a bad contract forever — the only remedies are deprecation and a new name. ' +
-      'Run check_publishable first and publish only when it reports publishable: true. ' +
-      'The Draft persists afterwards as your workspace for the next version.',
-    inputSchema: { name: z.string() },
+      'Run check_publishable with the same document first, and publish only when it reports ' +
+      'publishable: true. The Registry keeps only what it publishes; your working copy remains yours.',
+    inputSchema: {
+      name: z.string(),
+      document: z.record(z.string(), z.unknown()).describe('The full document to publish'),
+    },
   },
-  async ({ name }) => call('POST', `/${name}/publish`),
+  async ({ name, document }) => call('POST', `/${name}/publish`, document),
 );
 
 server.registerTool(
@@ -230,36 +219,13 @@ server.registerTool(
 );
 
 server.registerTool(
-  'authorize_realm',
+  'release_name',
   {
-    title: 'Authorize a Realm to see the Draft — MAY BE IRREVERSIBLE',
+    title: 'Release a never-published name',
     description:
-      'MAY BE IRREVERSIBLE. Authorizes a Realm to bind against the Draft (design §13.3). A Realm the ' +
-      'owner operates is scoped and safe. A Realm the owner does NOT operate is the trapdoor: sharing ' +
-      'is disclosure, and the Draft becomes answerable to ANY party thereafter, irreversibly (spec §7.3). The ' +
-      'Registry returns a confirmation challenge in that case; pass confirm_public: true only after ' +
-      'the human you act for has decided. Never confirm on your own judgment.',
-    inputSchema: {
-      name: z.string(),
-      realm: z.string(),
-      confirm_public: z.boolean().optional()
-        .describe('Required to accept the irreversible public disclosure of a non-operated Realm'),
-    },
-  },
-  async ({ name, realm, confirm_public }) =>
-    call('POST', `/${name}:draft/disclosure`, {
-      realm,
-      ...(confirm_public !== undefined ? { confirm_public } : {}),
-    }),
-);
-
-server.registerTool(
-  'discard_draft',
-  {
-    title: 'Discard an unpublished Draft, releasing the name',
-    description:
-      'Available only while no version has ever been published (spec §7.3). A name with published ' +
-      'versions is permanent and cannot be discarded — the Registry refuses with a structured 409.',
+      'Gives up the registration. Available only while no version has ever been published — "a name ' +
+      'with no published versions MAY be released by its owner" (spec §7.3); a name with published ' +
+      'versions is permanent, and the Registry refuses with a structured 409.',
     inputSchema: { name: z.string() },
   },
   async ({ name }) => call('DELETE', `/${name}`),

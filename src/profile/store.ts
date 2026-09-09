@@ -42,7 +42,6 @@ export type RegisterOptions = {
   name: string;
   allocationId: string;
   registeredAt?: Date;
-  draftContent?: unknown;
   importedFrom?: string;
   /**
    * The app_user whose authorization the seam confirmed. Recorded so
@@ -68,25 +67,21 @@ export async function registerName(
   assertName(options.name);
 
   const { rows } = await db.query<{ id: string; name: string }>(
-    // Every parameter is cast. `$4` appears in two positions — the jsonb column
-    // and the CASE that derives draft_modified from it — and Postgres cannot
-    // infer a type for a parameter used that way.
-    `INSERT INTO profile (name, allocation_id, registered_at, draft_content, draft_modified, imported_from, registered_by)
+    // Registration claims the name and nothing else (spec §6.3, §7.3): the
+    // Registry holds no unpublished content, so there is nothing more to store.
+    `INSERT INTO profile (name, allocation_id, registered_at, imported_from, registered_by)
      VALUES (
        $1::text,
        $2::uuid,
        coalesce($3::timestamptz, now()),
-       $4::jsonb,
-       CASE WHEN $4::jsonb IS NULL THEN NULL ELSE now() END,
-       $5::text,
-       $6::uuid
+       $4::text,
+       $5::uuid
      )
      RETURNING id, name`,
     [
       options.name,
       options.allocationId,
       options.registeredAt ?? null,
-      options.draftContent === undefined ? null : JSON.stringify(options.draftContent),
       options.importedFrom ?? null,
       options.registeredBy ?? null,
     ],

@@ -51,21 +51,67 @@ export type Property = {
    */
   propagate: boolean;
   /**
-   * Spec §6.3 Sample. Documentary — "this specification takes no view" of it.
+   * Spec §6.4 Sample. Documentary — "this specification takes no view" of it.
    *
    * `undefined` means the source had none, which is true of ALL 303 properties
    * in the deployed corpus: the legacy format has no sample field. See
    * `conformance.ts` for what that costs.
    */
   sample?: string;
+  /**
+   * Spec §6.4 Default (8 Sept revision). Optional, and PART OF THE CONTRACT:
+   * where defined, it is the value a Connection starts with when the supplying
+   * Capability has none at Bind, and redefining it in a later version breaks
+   * additivity (§6.2). Absent means the Property has no value until one is
+   * delivered — which is a different statement from a Default of empty string.
+   */
+  default?: string;
+};
+
+/** Spec §6.5 delivery modes. Exactly three; there is no unreliable stream. */
+export type ChannelMode = 'stream' | 'message' | 'datagram';
+
+/**
+ * Spec §6.5 (8 Sept revision) — a Channel: what a Property cannot carry, a
+ * protocol's own traffic or a stream.
+ *
+ * Channels share ONE NAME SPACE with Properties, and are stricter than
+ * Properties under additivity: a Profile's Channels are fixed by its first
+ * published version — a later version can neither add, remove, nor redefine
+ * one (§6.2). A Property nobody uses can be ignored; an open Channel nobody
+ * speaks on is indistinguishable from a broken one.
+ */
+export type Channel = {
+  name: string;
+  mode: ChannelMode;
+  /** IANA service name / ALPN ID where one exists; else Description explains. */
+  protocol: string;
+  description: string;
+  /**
+   * Where the carried protocol has roles of its own (RTSP client/server, RTP
+   * sender/receiver), which protocol role each PROFILE role plays — stated
+   * structurally so §9.5's demand on a Node is checkable.
+   */
+  providerRole?: string;
+  consumerRole?: string;
 };
 
 export type ProfileVersion = {
   properties: Property[];
+  /** Absent and empty are equivalent: a Profile with no Channels (§6.5). */
+  channels?: Channel[];
 };
 
-/** Spec §6.2. Three states, movement one-way, no path back to Draft. */
-export type Status = 'Draft' | 'Published' | 'Deprecated';
+/**
+ * Spec §6.3 (8 Sept revision). Three states, movement one-way:
+ * Unpublished → Published → Deprecated. There is no unpublishing.
+ *
+ * The 26 Aug draft called the first state "Draft"; the revision renamed it,
+ * and with the rename moved the unpublished content OUT of the Registry
+ * entirely — "its content lives with its author" (§6.3), and the Registry
+ * "SHALL NOT hold, serve, or answer for" it (§7.3, §9.3).
+ */
+export type Status = 'Unpublished' | 'Published' | 'Deprecated';
 
 /**
  * `undefined` on any optional field means THE KEY WAS ABSENT, and the

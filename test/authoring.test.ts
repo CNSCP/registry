@@ -1,14 +1,15 @@
 /**
- * The authoring lifecycle — design §13, §15; §23 priorities 2, 5 and 7.
+ * The authoring lifecycle — design §13, §15; §23 priorities 2 and 7.
  *
- * Runs the whole intended Phase 0 path: an agent registers a name, shapes the
- * Draft, rehearses publication with dry_run, publishes, reshapes, is refused
- * for a non-additive change, and deprecates — against a real database, through
- * the real routes.
+ * Reworked for the 8 September 2026 revision: the Registry holds no
+ * unpublished content (spec §7.3), so publication CARRIES its content — the
+ * document travels in the POST body, is checked, and is frozen or refused
+ * with nothing retained. The author's workspace is the author's own; here it
+ * is a local variable, which is exactly the point.
  *
- * The scope-containment block is §23 priority 7 verbatim: "a draft:write
- * credential cannot publish, deprecate, or disclose, under any endpoint or
- * parameter combination; and dry_run=true provably writes nothing."
+ * The scope-containment block is §23 priority 7: "a draft:write credential
+ * cannot publish or deprecate under any endpoint or parameter combination;
+ * and dry_run=true provably writes nothing."
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -35,7 +36,7 @@ const PUBLISHER: Credential = {
   token: 'publisher-'.padEnd(40, 'y'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate', 'disclose'],
+  scopes: ['draft:write', 'publish', 'deprecate'],
 };
 
 let harness: Harness;
@@ -44,7 +45,8 @@ let app: FastifyInstance;
 
 const auth = (credential: Credential) => ({ authorization: `Bearer ${credential.token}` });
 
-function draftDocument(properties: Record<string, unknown>[]) {
+/** The author's working document — held HERE, not in the Registry (§7.3). */
+function workingDocument(properties: Record<string, unknown>[], channels?: Record<string, unknown>[]) {
   return {
     Header: {
       'Name': 'padi.authored',
@@ -56,10 +58,12 @@ function draftDocument(properties: Record<string, unknown>[]) {
       'Website': 'https://padi.io/authored',
     },
     Properties: { Provider: properties, Consumer: [] },
+    ...(channels ? { Channels: channels } : {}),
   };
 }
 
 const propertyV1 = { Name: 'reading', Mandatory: 'yes', Propagate: 'yes', Description: 'The reading.' };
+const propertyV2 = { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The units.' };
 
 before(async () => {
   harness = await freshDatabase();
@@ -87,12 +91,10 @@ before(async () => {
   }
 
   app = Fastify();
-  // Authoring and resolution share the host and split by method (§15).
   await registerAuthoringRoutes(app, {
     pool: db,
     ownership: new PgOwnershipStore(db),
     credentials: [DRAFTER, PUBLISHER],
-    operatedRealms: ['padi-dev-realm'],
   });
   await registerResolutionRoutes(app, { db, html: false });
   await app.ready();
@@ -104,12 +106,9 @@ after(async () => {
 });
 
 describe('the lifecycle, end to end (§13)', () => {
-  test('PUT /<name> registers and creates the Draft', async () => {
-    const response = await app.inject({
-      method: 'PUT', url: '/padi.authored', headers: auth(DRAFTER),
-    });
+  test('PUT /<name> registers — the name, and nothing else (spec §6.3)', async () => {
+    const response = await app.inject({ method: 'PUT', url: '/padi.authored', headers: auth(DRAFTER) });
     assert.equal(response.statusCode, 201);
-    assert.equal(response.json().draft, '/padi.authored:draft');
   });
 
   test('registration is idempotent on the name', async () => {
@@ -118,39 +117,47 @@ describe('the lifecycle, end to end (§13)', () => {
     assert.equal(response.json().existing, true);
   });
 
-  test('registering under a Prefix you do not hold is a structured 403', async () => {
-    const response = await app.inject({ method: 'PUT', url: '/c4sb.mine', headers: auth(DRAFTER) });
-    // c4sb is operator-held pending its claimant; the author IS an operator
-    // member, so pick a truly foreign case: an unallocated Prefix.
+  test('registering under an unallocated Prefix is a structured 403', async () => {
     const foreign = await app.inject({ method: 'PUT', url: '/nowhere.mine', headers: auth(DRAFTER) });
     assert.equal(foreign.statusCode, 403);
     assert.equal(foreign.json().code, 'authorization.allocation-not-found');
-    assert.equal(foreign.json().gate, 'authorization');
-    void response;
   });
 
-  test('PUT :draft replaces the Draft, without restriction and without gates', async () => {
+  test('the registered name holds NOTHING — no content column exists to hold it (spec §7.3)', async () => {
+    const { rows } = await db.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'profile'`,
+    );
+    const columns = rows.map((r) => r.column_name);
+    for (const gone of ['draft_content', 'draft_modified', 'draft_disclosure']) {
+      assert.ok(!columns.includes(gone), `${gone} still exists; the Registry may not hold unpublished content`);
+    }
+  });
+
+  test('publish without a payload is a structured 400 naming the reason', async () => {
     const response = await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([propertyV1]),
+      method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
     });
-    assert.equal(response.statusCode, 200);
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, 'publish.payload_required');
+    assert.match(response.json().message, /holds no unpublished content/);
   });
 
-  test('dry_run rehearses every gate and reports what would happen', async () => {
+  test('dry_run rehearses every gate on the payload and reports what would happen', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish?dry_run=true', headers: auth(PUBLISHER),
+      payload: workingDocument([propertyV1]),
     });
-    assert.equal(response.statusCode, 200);
+    assert.equal(response.statusCode, 200, response.body);
     assert.equal(response.json().publishable, true);
     assert.equal(response.json().would_assign_version, 1);
   });
 
-  test('publication freezes the Draft as version 1', async () => {
+  test('publication freezes the payload as version 1', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([propertyV1]),
     });
-    assert.equal(response.statusCode, 201);
+    assert.equal(response.statusCode, 201, response.body);
     assert.equal(response.json().version, 1);
 
     // And it resolves immediately, on the same host, by GET.
@@ -159,25 +166,12 @@ describe('the lifecycle, end to end (§13)', () => {
     assert.equal(JSON.parse(resolved.body).Header.Name, 'padi.authored');
   });
 
-  test('the Draft persists after publication as the workspace (spec §6.2)', async () => {
-    const { rows } = await db.query<{ draft_content: unknown }>(
-      `SELECT draft_content FROM profile WHERE name = 'padi.authored'`,
-    );
-    assert.ok(rows[0]!.draft_content, 'publication must not consume the Draft');
-  });
-
-  test('an additive Draft publishes as version 2', async () => {
-    await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([
-        propertyV1,
-        { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The units.' },
-      ]),
-    });
+  test('an additive document publishes as version 2', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([propertyV1, propertyV2]),
     });
-    assert.equal(response.statusCode, 201);
+    assert.equal(response.statusCode, 201, response.body);
     assert.equal(response.json().version, 2);
   });
 
@@ -208,35 +202,61 @@ describe('the lifecycle, end to end (§13)', () => {
   });
 });
 
-describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
-  test('removing a Property is refused with a structured, actionable finding', async () => {
-    await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([]), // reading and units both gone
+describe('the Registry holds no unpublished content (spec §7.3, §9.3)', () => {
+  test('PUT /<name>:unpublished is refused with the architecture, not a permission error', async () => {
+    const response = await app.inject({
+      method: 'PUT', url: '/padi.authored:unpublished', headers: auth(DRAFTER),
+      payload: workingDocument([propertyV1]),
     });
+    assert.equal(response.statusCode, 405);
+    assert.equal(response.json().code, 'unpublished.not_held');
+    assert.match(response.json().message, /lives with you/);
+  });
+
+  test('GET /<name>:unpublished is never resolved — for anyone', async () => {
+    const response = await app.inject({ method: 'GET', url: '/padi.authored:unpublished' });
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.json().resolvable, false);
+    assert.match(response.json().note, /never resolved by the Registry/);
+  });
+
+  test('a refused publication retains NOTHING (§7.3)', async () => {
+    const before = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM profile_version`);
+
+    // Non-additive: drops both properties.
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([{ Name: 'other', Mandatory: 'no', Propagate: 'no', Description: 'd' }]),
+    });
+    assert.equal(response.statusCode, 422);
+    assert.match(response.json().message, /nothing was retained/);
+
+    const after = await db.query<{ n: string }>(`SELECT count(*)::text AS n FROM profile_version`);
+    assert.equal(after.rows[0]!.n, before.rows[0]!.n);
+  });
+});
+
+describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
+  test('removing a Property is refused with a structured, actionable finding', async () => {
+    const response = await app.inject({
+      method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([]), // reading and units both gone — and zero Properties besides
     });
     assert.equal(response.statusCode, 422);
     const findings = response.json().findings;
     const removed = findings.filter((f: { code: string }) => f.code === 'additivity.property_removed');
     assert.equal(removed.length, 2);
     assert.equal(removed[0].gate, 'additivity');
-    assert.equal(removed[0].prior_version, 2);
+    assert.ok(findings.some((f: { code: string }) => f.code === 'properties.none'),
+      'zero Properties is its own finding (§6.4)');
     // No successor name is proposed (spec §7.7).
     assert.ok(!JSON.stringify(findings).includes('suggest'));
   });
 
   test('redefining a flag is refused, naming the attribute and both values', async () => {
-    await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([
-        { ...propertyV1, Propagate: 'no' }, // flipped
-        { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The units.' },
-      ]),
-    });
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([{ ...propertyV1, Propagate: 'no' }, propertyV2]),
     });
     assert.equal(response.statusCode, 422);
     const finding = response.json().findings.find(
@@ -247,17 +267,27 @@ describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
     assert.equal(finding.now, false);
   });
 
-  test('adding a MANDATORY Property is refused (spec §6.2)', async () => {
-    await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([
-        propertyV1,
-        { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The units.' },
-        { Name: 'calibration', Mandatory: 'yes', Propagate: 'no', Description: 'New and required.' },
-      ]),
-    });
+  test('adding a Default where none was is a redefinition (8 Sept §6.2)', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([{ ...propertyV1, Default: '0' }, propertyV2]),
+    });
+    assert.equal(response.statusCode, 422);
+    const finding = response.json().findings.find(
+      (f: { code: string; attribute?: string }) => f.code === 'additivity.property_redefined',
+    );
+    assert.equal(finding.attribute, 'default');
+    assert.equal(finding.was, '(absent)');
+    assert.equal(finding.now, '0');
+  });
+
+  test('adding a MANDATORY Property is refused (spec §6.2)', async () => {
+    const response = await app.inject({
+      method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument([
+        propertyV1, propertyV2,
+        { Name: 'calibration', Mandatory: 'yes', Propagate: 'no', Description: 'New and required.' },
+      ]),
     });
     assert.equal(response.statusCode, 422);
     const finding = response.json().findings.find(
@@ -266,12 +296,43 @@ describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
     assert.equal(finding.property, 'calibration');
   });
 
-  test('documentary changes block nothing — §6.3 takes no view of them', () => {
+  test('ADDING A CHANNEL to a Channel-free Profile is refused — Channels are fixed at v1 (§6.2)', async () => {
+    const response = await app.inject({
+      method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
+      payload: workingDocument(
+        [propertyV1, propertyV2],
+        [{ Name: 'feed', Mode: 'stream', Protocol: 'http', Description: 'A late-added channel.' }],
+      ),
+    });
+    assert.equal(response.statusCode, 422);
+    const finding = response.json().findings.find(
+      (f: { code: string }) => f.code === 'additivity.channel_added',
+    );
+    assert.equal(finding.channel, 'feed');
+    assert.match(finding.message, /indistinguishable from a broken one/);
+  });
+
+  test('documentary changes block nothing — §6.4 takes no view of them', () => {
     const before = { properties: [{ name: 'x', description: 'old', role: 'provider' as const, mandatory: true, propagate: true }] };
     const after = { properties: [{ name: 'x', description: 'NEW WORDING', role: 'provider' as const, mandatory: true, propagate: true, sample: '5' }] };
     const result = checkAdditivity(after, before, 1);
     assert.equal(result.additive, true);
     assert.equal(result.documentaryChanges.length, 2);
+  });
+
+  test('channel additivity unit cases: remove and redefine', () => {
+    const channel = { name: 'c', mode: 'stream' as const, protocol: 'http', description: 'd' };
+    const v1 = { properties: [{ name: 'x', description: 'd', role: 'provider' as const, mandatory: true, propagate: false }], channels: [channel] };
+
+    const removed = checkAdditivity({ ...v1, channels: [] }, v1, 1);
+    assert.ok(removed.findings.some((f) => f.code === 'additivity.channel_removed'));
+
+    const redefined = checkAdditivity(
+      { ...v1, channels: [{ ...channel, mode: 'message' as const }] }, v1, 1);
+    assert.ok(redefined.findings.some((f) => f.code === 'additivity.channel_redefined'));
+
+    const unchanged = checkAdditivity(v1, v1, 1);
+    assert.equal(unchanged.additive, true);
   });
 
   test('a rejected publication changes nothing — the version count is untouched', async () => {
@@ -284,17 +345,16 @@ describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
 });
 
 describe('SCOPE CONTAINMENT — §23 priority 7', () => {
-  // "A draft:write credential cannot publish, deprecate, or disclose, under
-  // any endpoint or parameter combination; and dry_run=true provably writes
-  // nothing."
-
-  test('draft:write cannot publish — not even as a dry run', async () => {
+  test('draft:write cannot publish — not even as a dry run, not even with a perfect payload', async () => {
     for (const url of [
       '/padi.authored/publish',
       '/padi.authored/publish?dry_run=true',
       '/padi.authored/publish?dry_run=false',
     ]) {
-      const response = await app.inject({ method: 'POST', url, headers: auth(DRAFTER) });
+      const response = await app.inject({
+        method: 'POST', url, headers: auth(DRAFTER),
+        payload: workingDocument([propertyV1, propertyV2]),
+      });
       assert.equal(response.statusCode, 403, url);
       assert.equal(response.json().code, 'auth.scope', url);
       assert.equal(response.json().required_scope, 'publish', url);
@@ -309,23 +369,13 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
     assert.equal(response.json().required_scope, 'deprecate');
   });
 
-  test('draft:write cannot disclose', async () => {
-    const response = await app.inject({
-      method: 'POST', url: '/padi.authored:draft/disclosure', headers: auth(DRAFTER),
-      payload: { realm: 'someone-elses-realm', confirm_public: true },
-    });
-    assert.equal(response.statusCode, 403);
-    assert.equal(response.json().required_scope, 'disclose');
-  });
-
   test('no token at all is a 401 on every write verb', async () => {
     const attempts: [string, string][] = [
-      ['PUT', '/padi.authored:draft'],
+      ['PUT', '/padi.someother'],
       ['POST', '/padi.authored/publish'],
       ['POST', '/padi.authored:2/deprecate'],
       ['PATCH', '/padi.authored:2/header'],
       ['DELETE', '/padi.authored'],
-      ['POST', '/padi.authored:draft/disclosure'],
     ];
     for (const [method, url] of attempts) {
       const response = await app.inject({ method: method as never, url, payload: {} });
@@ -334,30 +384,21 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
   });
 
   test('dry_run=true provably writes nothing', async () => {
-    // Put a publishable Draft in place, then rehearse and compare EVERYTHING:
-    // version rows, draft bytes, and the audit chain head.
-    await app.inject({
-      method: 'PUT', url: '/padi.authored:draft', headers: auth(DRAFTER),
-      payload: draftDocument([
-        propertyV1,
-        { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The units.' },
-        { Name: 'zone', Mandatory: 'no', Propagate: 'no', Description: 'Optional zone.' },
-      ]),
-    });
-
     const snapshot = async () =>
       (
-        await db.query<{ versions: string; head: string | null; draft: string }>(
+        await db.query<{ versions: string; head: string | null; profiles: string }>(
           `SELECT
              (SELECT count(*)::text FROM profile_version) AS versions,
              (SELECT max(event_hash) FROM (SELECT event_hash FROM audit_event ORDER BY seq DESC LIMIT 1) h) AS head,
-             (SELECT md5(draft_content::text) FROM profile WHERE name = 'padi.authored') AS draft`,
+             (SELECT count(*)::text FROM profile) AS profiles`,
         )
       ).rows[0]!;
 
     const before = await snapshot();
     const rehearsal = await app.inject({
       method: 'POST', url: '/padi.authored/publish?dry_run=true', headers: auth(PUBLISHER),
+      payload: workingDocument([propertyV1, propertyV2,
+        { Name: 'zone', Mandatory: 'no', Propagate: 'no', Description: 'Optional zone.' }]),
     });
     const after = await snapshot();
 
@@ -368,53 +409,8 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
   });
 });
 
-describe('the disclosure trapdoor through the API (§23 priority 5, §13.3)', () => {
-  test('an operated Realm authorizes without ceremony and stays scoped', async () => {
-    const response = await app.inject({
-      method: 'POST', url: '/padi.authored:draft/disclosure', headers: auth(PUBLISHER),
-      payload: { realm: 'padi-dev-realm' },
-    });
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.json().disclosure, 'authorized');
-  });
-
-  test('a NON-operated Realm demands explicit confirmation first', async () => {
-    const response = await app.inject({
-      method: 'POST', url: '/padi.authored:draft/disclosure', headers: auth(PUBLISHER),
-      payload: { realm: 'partner-realm' },
-    });
-    assert.equal(response.statusCode, 409);
-    assert.equal(response.json().code, 'disclosure.confirmation_required');
-    assert.equal(response.json().irreversible, true);
-
-    // And the refusal changed nothing.
-    const { rows } = await db.query(`SELECT draft_disclosure FROM profile WHERE name = 'padi.authored'`);
-    assert.equal(rows[0]!.draft_disclosure, 'authorized');
-  });
-
-  test('confirmed, the trapdoor closes — public, in the same transaction, irreversibly', async () => {
-    const response = await app.inject({
-      method: 'POST', url: '/padi.authored:draft/disclosure', headers: auth(PUBLISHER),
-      payload: { realm: 'partner-realm', confirm_public: true },
-    });
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.json().disclosure, 'public');
-    assert.equal(response.json().irreversible, true);
-
-    // The Draft now answers to ANY party on the read path (spec §7.3).
-    const anyone = await app.inject({ method: 'GET', url: '/padi.authored:draft' });
-    assert.equal(anyone.statusCode, 200);
-
-    // And the database trigger holds the door shut.
-    await assert.rejects(
-      () => db.query(`UPDATE profile SET draft_disclosure = 'private' WHERE name = 'padi.authored'`),
-      /trapdoor/,
-    );
-  });
-});
-
-describe('discard (§13.5)', () => {
-  test('a never-published Draft may be discarded, releasing the name', async () => {
+describe('release (§13.5, spec §7.3)', () => {
+  test('a never-published name may be released', async () => {
     await app.inject({ method: 'PUT', url: '/padi.scratch', headers: auth(DRAFTER) });
     const response = await app.inject({ method: 'DELETE', url: '/padi.scratch', headers: auth(DRAFTER) });
     assert.equal(response.statusCode, 204);
@@ -423,7 +419,7 @@ describe('discard (§13.5)', () => {
     assert.equal(gone.statusCode, 404);
   });
 
-  test('a published name is permanent — discard is a structured 409', async () => {
+  test('a published name is permanent — release is a structured 409', async () => {
     const response = await app.inject({ method: 'DELETE', url: '/padi.authored', headers: auth(DRAFTER) });
     assert.equal(response.statusCode, 409);
     assert.equal(response.json().code, 'immutability.name_permanent');
@@ -443,10 +439,12 @@ describe('the chain survives the whole session', () => {
     );
     const actions = rows.map((r) => r.action);
     for (const expected of [
-      'profile.register', 'profile.draft', 'profile.publish',
-      'profile.deprecate', 'profile.stewardship', 'profile.disclose', 'profile.discard',
+      'profile.register', 'profile.publish', 'profile.deprecate', 'profile.stewardship', 'profile.discard',
     ]) {
       assert.ok(actions.includes(expected), `no audit event for ${expected}`);
     }
+    // And none of the acts the 8 Sept revision removed from the Registry.
+    assert.ok(!actions.includes('profile.draft'), 'the Registry recorded holding a draft');
+    assert.ok(!actions.includes('profile.disclose'), 'the Registry recorded a disclosure act');
   });
 });
