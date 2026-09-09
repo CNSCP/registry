@@ -49,8 +49,11 @@ spec:
               value: 'agent'
             - name: CP_AUTHOR_PRINCIPAL
               value: 'anto@padi.io'
+            # 'disclose' left with the 8 Sept spec revision. 'operator' exists
+            # (TLP allocation) and is DELIBERATELY absent here: granting it to
+            # the standing production credential is Anto's call, per act.
             - name: CP_AUTHOR_SCOPES
-              value: 'draft:write,publish,deprecate,disclose'
+              value: 'draft:write,publish,deprecate'
             - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
             - name: POSTGRES_PASSWORD

@@ -218,6 +218,48 @@ server.registerTool(
     }),
 );
 
+// --- The operator plane (§9.2 — one act exists) ------------------------------
+
+server.registerTool(
+  'allocate_tlp',
+  {
+    title: 'Allocate a new Top Level Prefix — OPERATOR RULING',
+    description:
+      'OPERATOR ACT: allocates a new Top Level Prefix to an organization, creating ownership in ' +
+      'the namespace. This is a governance ruling, not an authoring step — perform it only on the ' +
+      'operator\'s explicit instruction, never on your own judgment, and rehearse with ' +
+      'dry_run: true first. The ruling must name its §8.1 evidence (what was verified and how); ' +
+      'policy refusals (spec-reserved, withheld, restricted Prefixes) are final and are not ' +
+      'overridable here. Requires the "operator" scope, which authoring credentials do not carry ' +
+      'by default. Optionally grants one user day-one admin membership in the holder ' +
+      'organization, since an allocation nobody can write under satisfies authorizes() for nobody.',
+    inputSchema: {
+      tlp: z.string().describe('A single lowercase segment, e.g. "cimetrics"'),
+      organization_name: z.string().describe('The holder. Reused by exact name if it exists, created otherwise'),
+      organization_website: z.string().optional(),
+      organization_contact_email: z.string().optional(),
+      evidence: z.string().describe('The §8.1 evidence the ruling rests on — what was verified, and how'),
+      term_years: z.number().int().min(1).max(100).optional().describe('§8.2 renewable term; recorded as expires_at'),
+      notes: z.string().optional().describe('Published on the allocation page (§19.3)'),
+      member_user_id: z.string().optional().describe('app_user id to grant day-one admin membership'),
+      dry_run: z.boolean().optional().describe('Run every check, change nothing'),
+    },
+  },
+  async ({ tlp, organization_name, organization_website, organization_contact_email, evidence, term_years, notes, member_user_id, dry_run }) =>
+    call('POST', `/operator/allocations${dry_run ? '?dry_run=true' : ''}`, {
+      tlp,
+      organization: {
+        name: organization_name,
+        ...(organization_website !== undefined ? { website: organization_website } : {}),
+        ...(organization_contact_email !== undefined ? { contact_email: organization_contact_email } : {}),
+      },
+      evidence,
+      ...(term_years !== undefined ? { term_years } : {}),
+      ...(notes !== undefined ? { notes } : {}),
+      ...(member_user_id !== undefined ? { member_user_id } : {}),
+    }),
+);
+
 server.registerTool(
   'release_name',
   {

@@ -11,6 +11,13 @@ Contact for anything namespace- or policy-shaped: Anto (anto@padi.io). The
 design document is `REGISTRY-DESIGN.md` at the repo root; section references
 below (§) point into it.
 
+> **State of the code (9 Sept).** Deploy an image built from commit *after*
+> the 9 Sept push. The spec's 2026 revision landed on 8–9 Sept (unpublished
+> content left the Registry; the API's publish verb now carries the document),
+> and 9 Sept added the browse UI (`GET /`, `GET /profiles` search) and the
+> operator allocation endpoint. An older ghcr image predating these will run,
+> but is not what should go live.
+
 ## What this service is
 
 A registry of Connection Profiles — small, immutable JSON contracts that
@@ -42,7 +49,7 @@ untouched during the transition and receives no writes.
 | `CP_AUTHOR_USER_ID` | secret | UUID printed by the bootstrap Job (see ordering note) |
 | `CP_PORT` | config | `8082` |
 | `BIND_HOST` | config | `0.0.0.0` in-cluster |
-| `CP_AUTHOR_KIND` / `CP_AUTHOR_PRINCIPAL` / `CP_AUTHOR_SCOPES` | config | Audit identity of the write credential; values in the manifest |
+| `CP_AUTHOR_KIND` / `CP_AUTHOR_PRINCIPAL` / `CP_AUTHOR_SCOPES` | config | Audit identity of the write credential; values in the manifest. The `operator` scope (TLP allocation) is deliberately NOT granted to the standing credential — Anto's call, per act |
 | `RENDER_HTML` | config | Optional; `false` disables the human-readable pages |
 
 ## What the repo provides (yours to adapt)
@@ -50,7 +57,7 @@ untouched during the transition and receives no writes.
 - `Dockerfile` — no build step by design: the container runs the same
   TypeScript the test suite runs, via Node 22 type-stripping. If you'd rather
   build/distroless it, nothing prevents that.
-- `.github/workflows/ci.yml` — tests (332, self-contained), a second job
+- `.github/workflows/ci.yml` — tests (366, self-contained), a second job
   running migrations + seed + import against real Postgres 16, then
   build-and-push to ghcr on green main. Replace with your flow at will; the
   **PG16 job is the part worth keeping** in whatever you build.
@@ -66,9 +73,21 @@ logs, and that uuid must go into the `registry-auth` secret before the
 Deployment rolls out.** First deploy is therefore: Postgres → Job → read logs →
 create secret → Deployment. Re-running the Job any time is a no-op that says so.
 
-Expected log landmarks: `Migrations complete!` · `Bootstrap: 30 allocations
+Expected log landmarks: `Migrations complete!` · `Bootstrap: 31 allocations
 created` · `CP_AUTHOR_USER_ID=…` · `Imported: 69 names registered, 69 versions
 published`.
+
+## Data at cutover
+
+The bootstrap Job produces the canonical fixture state: the 70 legacy
+cp.padi.io records, nothing else. Anto's development database has since
+accumulated real post-import acts (new registrations, publications, and their
+audit history). Whether `cp.cnscp.io` starts from the fixture or from a
+`pg_dump` of that database is **Anto's call at cutover, not a default** — ask
+him before the first Deployment goes live. Mechanically both are easy: fixture
+= run the Job as shipped; dump = restore before creating the auth secret, then
+skip the Job's seed/import (they're idempotent no-ops against restored data
+anyway).
 
 ## Invariants infra must never break
 
@@ -106,10 +125,12 @@ DNS: one record, `cp.cnscp.io` → the ingress, same shape as `cp.padi.io`.
 
 ```sh
 curl https://cp.cnscp.io/health
+curl https://cp.cnscp.io/                                              # root index: all 31 TLPs
+curl "https://cp.cnscp.io/profiles?q=hvac"                             # catalog search
 curl https://cp.cnscp.io/padi.tstat.basic:1                            # new-format JSON
 curl -H "Accept: application/json" https://cp.cnscp.io/profiles/padi.tstat.basic:1   # legacy format
 curl -sI https://cp.cnscp.io/padi.tstat.basic:1 | grep -i cache-control  # …immutable
 ```
 
-And `https://cp.cnscp.io/padi` in a browser should render an allocation page
-listing ~30 names.
+And in a browser: `https://cp.cnscp.io/` renders the registry index, and
+`https://cp.cnscp.io/padi` an allocation page listing ~28 names.

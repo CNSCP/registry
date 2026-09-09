@@ -21,7 +21,7 @@ git init && git add -A && git commit -m "Connection Profile Registry — Phase 0
 gh repo create cnscp/registry --public --source . --push
 ```
 
-CI runs the 332 tests, then migrations + seed + import against **real
+CI runs the 366 tests, then migrations + seed + import against **real
 PostgreSQL 16** (closing the wasm-PG18 gap), and on green pushes
 `ghcr.io/cnscp/registry:latest`. If the cnscp org's ghcr packages default to
 private, make this one public (Packages → registry → settings) or add an
@@ -52,7 +52,7 @@ kubectl apply -f deploy/k8s/30-bootstrap-job.yaml
 kubectl -n cp-registry logs -f job/registry-bootstrap
 ```
 
-Expect, in order: six migrations, `Bootstrap: 30 allocations created`, a line
+Expect, in order: six migrations, `Bootstrap: 31 allocations created`, a line
 `CP_AUTHOR_USER_ID=<uuid>` — **copy that uuid** — and
 `Imported: 69 names registered, 69 versions published`.
 

@@ -38,7 +38,7 @@ const kind = (process.env['CP_AUTHOR_KIND'] ?? 'agent') as Credential['kind'];
 const principal = process.env['CP_AUTHOR_PRINCIPAL'];
 // Unknown scope strings (e.g. a leftover 'disclose' from before the 8 Sept
 // revision removed the Registry's disclosure act) are dropped, not fatal.
-const KNOWN: Scope[] = ['draft:write', 'publish', 'deprecate'];
+const KNOWN: Scope[] = ['draft:write', 'publish', 'deprecate', 'operator'];
 const scopes = (process.env['CP_AUTHOR_SCOPES'] ?? 'draft:write')
   .split(',').map((s) => s.trim()).filter((s): s is Scope => (KNOWN as string[]).includes(s));
 

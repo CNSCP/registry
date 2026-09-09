@@ -61,13 +61,14 @@ Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publ
 - **The additivity gate** (§23 priority 2): removal, redefinition, and mandatory additions
   refused with structured `{ code, gate, property, ... }` findings an agent can act on
 - `?dry_run=true` runs every gate and provably writes nothing
-- Credential scopes `draft:write · publish · deprecate` (§15.2) — a machine author holds
-  `draft:write` alone; the disclosure act left the Registry with the 8 Sept revision
+- Credential scopes `draft:write · publish · deprecate · operator` (§15.2) — a machine author
+  holds `draft:write` alone; the disclosure act left the Registry with the 8 Sept revision, and
+  `operator` guards the one §9.2 act below
 
 The MCP server ([`src/mcp/server.ts`](src/mcp/server.ts)) — §15.1's "worth building early",
 since hand-authoring by an assistant is the Phase 0 publication path:
 
-- Eight tools over the authoring verbs, run with `npm run mcp` (stdio); configure with
+- Nine tools — the authoring verbs plus the operator act — run with `npm run mcp` (stdio); configure with
   `CP_REGISTRY_URL` and `CP_REGISTRY_TOKEN` — the token's scopes decide what the tools may do
 - Deliberately THIN: an HTTP client of the same API every other client uses (§4.4 — no
   privileged path), so every gate and audit write happens exactly once
@@ -91,9 +92,16 @@ And Part Two's storage layer (§12), enough to hold what the import produces:
   because spec §6.4 permits it and forbidding them is the opposite non-conformance
 - Version assignment under a row lock — max+1, assigned by the Registry, never by the author
 
-**Not built, and not stubbed** — Phase 2 (§25): applications, verification challenges,
-renewal, redemption, transfers, disputes, and the whole §9.2 operator plane. A route that
-returns 501 invites a client to be written against it, so those routes are absent instead.
+One §9.2 operator act exists — `POST /operator/allocations` (and `npm run allocate`),
+allocating a NEW Top Level Prefix as a Phase 0 operator ruling in the §10.2 bootstrap's
+mold: evidence named, policy consulted and never overridden, organization + allocation +
+optional day-one membership created in one audited transaction, `dry_run` first-class.
+Guarded by the `operator` scope, which no authoring credential carries by default.
+
+**Not built, and not stubbed** — the rest of Phase 2 (§25): applications, verification
+challenges, renewal, redemption, transfers, disputes, releases of withheld Prefixes, and
+the remainder of the §9.2 operator plane. A route that returns 501 invites a client to be
+written against it, so those routes are absent instead.
 
 One absence is permanent rather than pending. There is no endpoint anywhere to alter,
 unpublish, or withhold a published version. Spec §9.3 forbids all three, so the capability

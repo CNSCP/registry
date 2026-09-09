@@ -62,7 +62,7 @@ export const WITHHELD: readonly WithheldRule[] = [
   // A single dotless segment resolves to the allocation it denotes (§19.1), so
   // every reserved path must ALSO be a withheld Prefix or it would be shadowed.
   // These two lists must be extended together — see RESERVED_PATHS below.
-  ...(['console', 'assets', 'profiles', 'distribution', 'health', 'well-known'] as const).map(
+  ...(['console', 'assets', 'profiles', 'distribution', 'health', 'well-known', 'operator'] as const).map(
     (tlp) =>
       ({
         tlp,
@@ -124,6 +124,7 @@ export const RESERVED_PATHS: readonly string[] = [
   'distribution',
   'health',
   '.well-known',
+  'operator',
 ] as const;
 
 /** Restricted: allocatable, but only on reviewer approval with recorded rationale (§8.2). */

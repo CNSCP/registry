@@ -28,6 +28,7 @@ import type pg from 'pg';
 
 import { record } from '../audit.ts';
 import { nameProblem } from '../names.ts';
+import { allocateTlp, checkAllocatable } from '../part-one/allocate.ts';
 import { authorizes } from '../part-one/authorizes.ts';
 import type { OwnershipStore } from '../part-one/types.ts';
 import { checkAdditivityAgainstAll } from '../profile/additivity.ts';
@@ -39,8 +40,10 @@ import { splitReference } from '../part-three/routes.ts';
 
 // 'disclose' existed while the Registry held unpublished content; the 8 Sept
 // revision moved that content (and its disclosure) out of the Registry
-// entirely (spec §7.3), so the scope went with it.
-export type Scope = 'draft:write' | 'publish' | 'deprecate';
+// entirely (spec §7.3), so the scope went with it. 'operator' guards the §9.2
+// operator plane, of which exactly one act exists so far: allocating a Top
+// Level Prefix. No authoring credential should carry it by default.
+export type Scope = 'draft:write' | 'publish' | 'deprecate' | 'operator';
 
 export type Credential = {
   /** The bearer token value. */
@@ -269,7 +272,99 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       client.release();
     }
 
-    return reply.code(201).send({ name, registered: true, draft: `/${name}:draft` });
+    return reply.code(201).send({ name, registered: true });
+  });
+
+  // --- POST /operator/allocations — the one §9.2 operator act (Phase 0) -----
+  //
+  // Allocates a NEW Top Level Prefix, as an operator ruling in the §10.2
+  // bootstrap's mold: evidence named, everything audited, policy consulted and
+  // never overridden. Guarded by the 'operator' scope, which no authoring
+  // credential carries by default. `dry_run=true` runs every check and
+  // provably writes nothing.
+
+  app.post<{
+    Querystring: { dry_run?: string };
+    Body: {
+      tlp?: string;
+      organization?: { name?: string; website?: string; contact_email?: string };
+      evidence?: string;
+      term_years?: number;
+      notes?: string;
+      member_user_id?: string;
+    } | null;
+  }>('/operator/allocations', async (request, reply) => {
+    const authed = requireScope(request, reply, 'operator');
+    if (!authed) return;
+
+    const body = request.body;
+    if (!body || typeof body.tlp !== 'string' || typeof body.organization?.name !== 'string') {
+      return structuredError(reply, 400, 'allocation.payload_required', 'allocation',
+        'The ruling travels in the body: { tlp, organization: { name }, evidence, ... }.');
+    }
+    if (body.term_years !== undefined && (!Number.isInteger(body.term_years) || body.term_years < 1 || body.term_years > 100)) {
+      return structuredError(reply, 400, 'allocation.term_invalid', 'allocation',
+        'term_years is a whole number of years, 1 to 100 (§8.2).');
+    }
+
+    const allocateRequest = {
+      tlp: body.tlp,
+      organization: {
+        name: body.organization.name,
+        ...(body.organization.website ? { website: body.organization.website } : {}),
+        ...(body.organization.contact_email ? { contactEmail: body.organization.contact_email } : {}),
+      },
+      evidence: body.evidence ?? '',
+      ...(body.term_years !== undefined ? { termYears: body.term_years } : {}),
+      ...(body.notes ? { notes: body.notes } : {}),
+      ...(body.member_user_id ? { memberUserId: body.member_user_id } : {}),
+      actor: {
+        id: authed.credential.userId,
+        kind: authed.credential.kind,
+        ...(authed.credential.principal ? { principal: authed.credential.principal } : {}),
+      },
+    };
+
+    const dryRun = request.query.dry_run === 'true';
+    if (dryRun) {
+      const refusal = await checkAllocatable(pool, allocateRequest);
+      if (refusal) {
+        return structuredError(reply, refusal.code === 'tlp.already-allocated' ? 409 : 422,
+          `allocation.${refusal.code}`, 'allocation', refusal.message, { ...refusal.details, dry_run: true });
+      }
+      return reply.code(200).send({
+        allocatable: true,
+        dry_run: true,
+        tlp: allocateRequest.tlp,
+        message: 'The ruling would apply. Nothing has changed.',
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const outcome = await allocateTlp(client, allocateRequest);
+      if (!outcome.allocated) {
+        await client.query('ROLLBACK');
+        return structuredError(reply, outcome.code === 'tlp.already-allocated' ? 409 : 422,
+          `allocation.${outcome.code}`, 'allocation', outcome.message, outcome.details ?? {});
+      }
+      await client.query('COMMIT');
+      return reply.code(201).send({
+        allocated: true,
+        tlp: outcome.tlp,
+        holder: outcome.organization.name,
+        organization_created: outcome.organization.created,
+        expires_at: outcome.expiresAt,
+        membership: outcome.membership,
+        href: `/${outcome.tlp}`,
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   });
 
   // --- DELETE /<name> — discard (§13.5). Only while never published. --------

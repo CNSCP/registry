@@ -31,7 +31,7 @@ const AUTHOR: Credential = {
   userId: '',
   kind: 'agent',
   principal: 'anto@padi.io',
-  scopes: ['draft:write', 'publish', 'deprecate'],
+  scopes: ['draft:write', 'publish', 'deprecate', 'operator'],
 };
 
 let harness: Harness;
@@ -110,7 +110,7 @@ describe('the toolset', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
-      'check_publishable', 'check_registration', 'deprecate', 'publish',
+      'allocate_tlp', 'check_publishable', 'check_registration', 'deprecate', 'publish',
       'register_name', 'release_name', 'resolve', 'update_stewardship',
     ]);
   });
@@ -119,6 +119,10 @@ describe('the toolset', () => {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     assert.match(byName['publish']!.description ?? '', /IRREVERSIBLE/);
+    // The operator act announces itself as a governance ruling, to be taken
+    // only on the operator's explicit word.
+    assert.match(byName['allocate_tlp']!.description ?? '', /OPERATOR ACT/);
+    assert.match(byName['allocate_tlp']!.description ?? '', /explicit instruction/);
     // The workspace moved out of the Registry (8 Sept §7.3), and the tool
     // descriptions — the assistant's documentation — must say so.
     assert.match(byName['check_publishable']!.description ?? '', /Registry holds no unpublished content/);
@@ -188,6 +192,37 @@ describe('an assistant authors a Profile end to end', () => {
     assert.equal(result.isError, true);
     const body = result.json as { resolvable: boolean };
     assert.equal(body.resolvable, false);
+  });
+
+  test('the operator act works over MCP: allocate, then author beneath the new Prefix', async () => {
+    // Rehearse first, exactly as the tool description instructs.
+    const rehearsed = await tool('allocate_tlp', {
+      tlp: 'viamcp',
+      organization_name: 'Via MCP GmbH',
+      evidence: 'test ruling: fictional organization for the MCP allocation flow',
+      dry_run: true,
+    });
+    assert.equal(rehearsed.isError, false, rehearsed.raw);
+    assert.equal((rehearsed.json as { allocatable: boolean }).allocatable, true);
+
+    // The ruling. The MCP credential's user becomes the day-one admin.
+    const allocated = await tool('allocate_tlp', {
+      tlp: 'viamcp',
+      organization_name: 'Via MCP GmbH',
+      evidence: 'test ruling: fictional organization for the MCP allocation flow',
+      member_user_id: AUTHOR.userId,
+    });
+    assert.equal(allocated.isError, false, allocated.raw);
+    assert.equal((allocated.json as { allocated: boolean }).allocated, true);
+
+    // The point of the membership: the seam now authorizes authoring beneath it.
+    const registered = await tool('register_name', { name: 'viamcp.probe' });
+    assert.equal(registered.isError, false, registered.raw);
+
+    // And the allocation page answers for the new Prefix.
+    const page = await tool('resolve', { reference: 'viamcp' });
+    assert.equal(page.isError, false);
+    assert.equal((page.json as { holder: string }).holder, 'Via MCP GmbH');
   });
 
   test('an unreachable Registry is reported, not thrown', async () => {

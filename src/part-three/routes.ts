@@ -27,8 +27,11 @@ import { parseProfileVersion } from '../profile/spec2026.ts';
 import {
   namesBeginningWith,
   resolveAllocation,
+  resolveIndex,
   resolveName,
   resolveVersion,
+  searchCatalog,
+  type CatalogQuery,
   type ResolvedVersion,
 } from './store.ts';
 import {
@@ -85,6 +88,35 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
   app.get('/health', async () => ({ ok: true, part: 'three', surface: 'resolution' }));
 
   /**
+   * The root index. Every allocated Top Level Prefix — stable public facts
+   * only, exactly as the per-allocation page (§19.3). A selection surface,
+   * revalidated, never immutable.
+   */
+  app.get('/', async (request, reply) => {
+    const representation = negotiate(request.headers.accept, 'legacy');
+    const allocations = await resolveIndex(db);
+
+    reply.header('cache-control', 'no-cache').header('vary', 'Accept');
+
+    const body = {
+      registry: 'Connection Profile Registry',
+      allocations: allocations.map((a) => ({
+        reference: `cp:${a.tlp}`,
+        tlp: a.tlp,
+        holder: a.holder,
+        grandfathered: a.grandfathered,
+        names: a.names,
+        published_versions: a.published_versions,
+        href: `/${a.tlp}`,
+      })),
+      catalog: '/profiles',
+    };
+
+    if (representation === 'html' && renderHtml) return reply.type(MEDIA.html).send(renderIndex(body.allocations));
+    return reply.type(representation === 'spec2026' ? MEDIA.spec2026 : MEDIA.legacy).send(body);
+  });
+
+  /**
    * The catalog. `/profiles` lists; `/profiles/<name>` is the compatibility
    * alias ARETE.md documents, and it defaults to the LEGACY shape because that
    * is what the deployed SDKs fetching this path expect (§19.2).
@@ -94,9 +126,74 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     return resolveOne(request.headers.accept, segment, reply, 'legacy');
   });
 
-  app.get('/profiles', async () => ({
-    note: 'Catalog and search. Resolution is at the root: GET /<name>.',
-  }));
+  /**
+   * The catalog: a page of registered names, searchable. `?q=` is a substring
+   * search over names and published Headers; `?prefix=` filters to a string
+   * prefix at a segment boundary. Framed as a search over strings in both
+   * representations, because a catalog that behaved like an index would
+   * quietly reintroduce the hierarchy CNS/CP does not have (spec §7.7).
+   */
+  app.get<{ Querystring: { q?: string; prefix?: string; limit?: string; offset?: string } }>(
+    '/profiles',
+    async (request, reply) => {
+      const representation = negotiate(request.headers.accept, 'legacy');
+      const { q, prefix } = request.query;
+
+      if (prefix !== undefined && !/^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$/.test(prefix)) {
+        return reply.code(400).send({ error: 'not a well-formed prefix: lowercase segments, dot-separated' });
+      }
+      if (q !== undefined && q.length > 200) {
+        return reply.code(400).send({ error: 'the search string is limited to 200 characters' });
+      }
+
+      const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
+      const offset = request.query.offset === undefined ? 0 : Number(request.query.offset);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        return reply.code(400).send({ error: 'limit is an integer from 1 to 200' });
+      }
+      if (!Number.isInteger(offset) || offset < 0) {
+        return reply.code(400).send({ error: 'offset is a non-negative integer' });
+      }
+
+      const query: CatalogQuery = { limit, offset };
+      if (q) query.q = q;
+      if (prefix) query.prefix = prefix;
+
+      const result = await searchCatalog(db, query);
+      reply.header('cache-control', 'no-cache').header('vary', 'Accept');
+
+      const pageHref = (pageOffset: number): string => {
+        const params = new URLSearchParams();
+        if (q) params.set('q', q);
+        if (prefix) params.set('prefix', prefix);
+        if (limit !== 50) params.set('limit', String(limit));
+        if (pageOffset > 0) params.set('offset', String(pageOffset));
+        const rendered = params.toString();
+        return rendered ? `/profiles?${rendered}` : '/profiles';
+      };
+
+      const body = {
+        query: { ...(q ? { q } : {}), ...(prefix ? { prefix } : {}), limit, offset },
+        total: result.total,
+        count: result.entries.length,
+        entries: result.entries.map((e) => ({
+          name: e.name,
+          registered: e.registered_at,
+          ...(e.title === null ? {} : { title: e.title }),
+          versions: e.versions.map((v) => ({ version: v.version, status: v.status })),
+          href: `/${e.name}`,
+        })),
+        ...(offset + result.entries.length < result.total ? { next: pageHref(offset + limit) } : {}),
+        ...(offset > 0 ? { prev: pageHref(Math.max(0, offset - limit)) } : {}),
+        note: 'A text search over registered names and published Headers. No relationship may be inferred between names (spec §7.7); this is not an index.',
+      };
+
+      if (representation === 'html' && renderHtml) {
+        return reply.type(MEDIA.html).send(renderCatalog(body));
+      }
+      return reply.type(representation === 'spec2026' ? MEDIA.spec2026 : MEDIA.legacy).send(body);
+    },
+  );
 
   /** `GET /<name>/registration` — spec §9.3: answers that a name is registered, and since when. */
   app.get<{ Params: { ref: string } }>('/:ref/registration', async (request, reply) => {
@@ -412,6 +509,89 @@ function renderAllocation(body: {
     `<h1><code>cp:${escape(body.tlp)}</code></h1>
      <p>Held by ${escape(body.holder ?? 'the operator')}.</p>
      <table><tr><th>Name</th><th>Versions</th></tr>${rows}</table>`,
+  );
+}
+
+function renderIndex(
+  allocations: {
+    tlp: string;
+    holder: string | null;
+    grandfathered: boolean;
+    names: number;
+    published_versions: number;
+    href: string;
+  }[],
+): string {
+  const rows = allocations
+    .map(
+      (a) =>
+        `<tr><td><a href="${escape(a.href)}"><code>cp:${escape(a.tlp)}</code></a></td>
+         <td>${escape(a.holder ?? 'the operator')}${a.grandfathered ? ' · grandfathered' : ''}</td>
+         <td>${a.names}</td><td>${a.published_versions}</td></tr>`,
+    )
+    .join('');
+
+  return page(
+    'Connection Profile Registry',
+    `<h1>Connection Profile Registry</h1>
+     <form action="/profiles" method="get"><input name="q" size="40"
+       placeholder="Search names, titles, descriptions"> <button>Search</button></form>
+     <table><tr><th>Prefix</th><th>Held by</th><th>Names</th><th>Published versions</th></tr>${rows}</table>
+     <p><a href="/profiles">The full catalog</a>. A Profile resolves at the root:
+     <code>GET /&lt;name&gt;</code>, <code>GET /&lt;name&gt;:&lt;version&gt;</code>.</p>`,
+  );
+}
+
+function renderCatalog(
+  body: {
+    query: { q?: string; prefix?: string; limit: number; offset: number };
+    total: number;
+    count: number;
+    entries: { name: string; title?: string; versions: { version: number; status: string }[]; href: string }[];
+    next?: string;
+    prev?: string;
+  },
+): string {
+  const { q, prefix, offset } = body.query;
+
+  const rows = body.entries
+    .map(
+      (e) =>
+        `<tr><td><a href="${escape(e.href)}"><code>${escape(e.name)}</code></a></td>
+         <td>${escape(e.title ?? '')}</td>
+         <td>${
+           e.versions.length === 0
+             ? '<em>none published</em>'
+             : e.versions.map((v) => `${v.version}${v.status === 'deprecated' ? ' (deprecated)' : ''}`).join(', ')
+         }</td></tr>`,
+    )
+    .join('');
+
+  const showing =
+    body.total === 0
+      ? 'No names match.'
+      : `Showing ${offset + 1}–${offset + body.count} of ${body.total}.`;
+
+  const paging = [
+    body.prev ? `<a href="${escape(body.prev)}">&larr; previous</a>` : '',
+    body.next ? `<a href="${escape(body.next)}">next &rarr;</a>` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return page(
+    'Catalog — Connection Profile Registry',
+    `<h1>Catalog</h1>
+     <form action="/profiles" method="get"><input name="q" size="40" value="${escape(q ?? '')}"
+       placeholder="Search names, titles, descriptions">${
+         prefix ? `<input type="hidden" name="prefix" value="${escape(prefix)}">` : ''
+       } <button>Search</button></form>
+     ${prefix ? `<p>Names beginning <code>${escape(prefix)}.</code> as a string.</p>` : ''}
+     <p>${showing}</p>
+     ${body.count === 0 ? '' : `<table><tr><th>Name</th><th>Title</th><th>Versions</th></tr>${rows}</table>`}
+     ${paging ? `<p>${paging}</p>` : ''}
+     <p class="raw">A text search over registered names and published Headers. No relationship may be
+     inferred between names (spec §7.7); this is not an index. <a href="/">All Prefixes</a>.</p>`,
   );
 }
 

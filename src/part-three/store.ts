@@ -178,6 +178,144 @@ export async function resolveAllocation(db: Queryable, tlp: string): Promise<All
 }
 
 /**
+ * The root index (§19.3 extended to the whole Registry): every allocated Top
+ * Level Prefix, with the same discipline as the allocation page — STABLE PUBLIC
+ * FACTS ONLY. `status`, `class`, `pending_claimant`, locks and disputes are
+ * deliberately not selected; in-flight governance stays off the page. The
+ * counts are simple facts about the public namespace: how many names are
+ * registered beneath the Prefix, and how many published versions they carry.
+ */
+export type IndexEntry = {
+  tlp: string;
+  holder: string | null;
+  grandfathered: boolean;
+  names: number;
+  published_versions: number;
+};
+
+export async function resolveIndex(db: Queryable): Promise<IndexEntry[]> {
+  const { rows } = await db.query<IndexEntry>(
+    `SELECT a.tlp,
+            o.name AS holder,
+            a.grandfathered,
+            coalesce(c.names, 0)::int AS names,
+            coalesce(c.versions, 0)::int AS published_versions
+       FROM allocation a
+       LEFT JOIN organization o ON o.id = a.org_id
+       LEFT JOIN (
+         SELECT split_part(p.name, '.', 1) AS tlp,
+                count(DISTINCT p.id) AS names,
+                count(v.id) AS versions
+           FROM profile p
+           LEFT JOIN profile_version v ON v.profile_id = p.id
+          WHERE p.discarded_at IS NULL
+          GROUP BY 1
+       ) c ON c.tlp = a.tlp
+      ORDER BY a.tlp`,
+  );
+  return rows;
+}
+
+/**
+ * The catalog (§19.3's search affordance, grown up): a page of registered
+ * names, optionally filtered by a string prefix or a substring search over
+ * names and published Headers.
+ *
+ * Two rules carry over intact. It reads `profile` and `profile_version` only —
+ * governance never reaches it (§4.1 rule 1). And it is a TEXT SEARCH OVER
+ * STRINGS, never a hierarchy: the prefix filter tests the segment boundary
+ * (`padi.test` matches `padi.test.abc`, never `padi.tstat.basic`) but implies
+ * no relationship between the names it returns (spec §7.7).
+ *
+ * The searchable Header text (Title, Description) comes from each name's
+ * LATEST version — the search surface tracks the namespace as it stands, while
+ * every version stays citable by reference.
+ */
+export type CatalogEntry = {
+  name: string;
+  registered_at: Date;
+  title: string | null;
+  versions: { version: number; status: 'published' | 'deprecated' }[];
+};
+
+export type CatalogQuery = {
+  q?: string;
+  prefix?: string;
+  limit: number;
+  offset: number;
+};
+
+export type CatalogResult = {
+  total: number;
+  entries: CatalogEntry[];
+};
+
+/** LIKE/ILIKE treat %, _ and \ specially; a search string is literal text. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+export async function searchCatalog(db: Queryable, query: CatalogQuery): Promise<CatalogResult> {
+  const prefix = query.prefix ?? null;
+  const prefixLike = prefix === null ? null : `${escapeLike(prefix)}.%`;
+  const needle = query.q ? `%${escapeLike(query.q)}%` : null;
+
+  // The filter, once. Matched names, with the latest version's Header text.
+  const from = `
+    FROM profile p
+    LEFT JOIN LATERAL (
+      SELECT v.content #>> '{Header,Title}'       AS title,
+             v.content #>> '{Header,Description}' AS description
+        FROM profile_version v
+       WHERE v.profile_id = p.id
+       ORDER BY v.version DESC
+       LIMIT 1
+    ) latest ON true
+    WHERE p.discarded_at IS NULL
+      AND ($1::text IS NULL OR p.name = $1 OR p.name LIKE $2)
+      AND ($3::text IS NULL
+           OR p.name ILIKE $3
+           OR coalesce(latest.title, '') ILIKE $3
+           OR coalesce(latest.description, '') ILIKE $3)`;
+
+  const counted = await db.query<{ total: number }>(
+    `SELECT count(*)::int AS total ${from}`,
+    [prefix, prefixLike, needle],
+  );
+  const total = counted.rows[0]?.total ?? 0;
+
+  const page = await db.query<{ name: string; registered_at: Date; title: string | null }>(
+    `SELECT p.name, p.registered_at, latest.title ${from}
+      ORDER BY p.name
+      LIMIT $4 OFFSET $5`,
+    [prefix, prefixLike, needle, query.limit, query.offset],
+  );
+
+  if (page.rows.length === 0) return { total, entries: [] };
+
+  const versions = await db.query<{ name: string; version: number; status: 'published' | 'deprecated' }>(
+    `SELECT p.name, v.version, v.status
+       FROM profile_version v
+       JOIN profile p ON p.id = v.profile_id
+      WHERE p.name = ANY($1)
+      ORDER BY p.name, v.version`,
+    [page.rows.map((r) => r.name)],
+  );
+
+  const byName = new Map<string, { version: number; status: 'published' | 'deprecated' }[]>();
+  for (const row of versions.rows) {
+    const list = byName.get(row.name) ?? [];
+    list.push({ version: row.version, status: row.status });
+    byName.set(row.name, list);
+  }
+
+  return {
+    total,
+    entries: page.rows.map((r) => ({ ...r, versions: byName.get(r.name) ?? [] })),
+  };
+}
+
+/**
  * Names beginning with a string — the SEARCH affordance of §19.3, and only that.
  *
  * `GET /acme.meter` when only `acme.meter.flow` exists is a 404 in the machine

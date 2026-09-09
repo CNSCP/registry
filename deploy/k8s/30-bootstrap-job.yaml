@@ -2,7 +2,7 @@
 # takes traffic. Everything in it is idempotent, so re-running is safe.
 #
 #   1. migrations           the six schema files
-#   2. seed                 the 30 allocations of §10.2, audited — MUST precede
+#   2. seed                 the 31 allocations of §10.2 + §3.2, audited — MUST precede
 #                           the identity step, which joins the operator org
 #                           the seed creates
 #   3. author identity      the app_user + operator membership the authoring
