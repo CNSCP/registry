@@ -79,15 +79,12 @@ published`.
 
 ## Data at cutover
 
-The bootstrap Job produces the canonical fixture state: the 70 legacy
-cp.padi.io records, nothing else. Anto's development database has since
-accumulated real post-import acts (new registrations, publications, and their
-audit history). Whether `cp.cnscp.io` starts from the fixture or from a
-`pg_dump` of that database is **Anto's call at cutover, not a default** — ask
-him before the first Deployment goes live. Mechanically both are easy: fixture
-= run the Job as shipped; dump = restore before creating the auth secret, then
-skip the Job's seed/import (they're idempotent no-ops against restored data
-anyway).
+**Ruled (Anto, 9 Sept): `cp.cnscp.io` starts from a `pg_dump` of Anto's
+development database**, which holds real post-import acts (registrations,
+publications, and their audit chain) — not from the fixture bootstrap. The
+step-by-step, including the fresh production token minted at secret-creation
+time, is [`CUTOVER.md`](CUTOVER.md). The bootstrap Job still runs (it is
+idempotent against restored data and prints the author id the secret needs).
 
 ## Invariants infra must never break
 
