@@ -2,6 +2,7 @@
   "name": "@cnscp/registry",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Connection Profile Registry — Part One (allocation), the Profile model and serializations, and the Phase 0 import",
   "type": "module",
   "engines": {
