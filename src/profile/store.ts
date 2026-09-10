@@ -125,22 +125,57 @@ export type PublishOptions = {
  * a row lock on the parent profile — spec §6.2 makes assignment the Registry's
  * job, and two concurrent publications of one Profile must not both read the
  * same max.
+ *
+ * CALL ON THE CLIENT OF AN OPEN TRANSACTION (like record(), and for the same
+ * reason): the row lock taken below to stamp the document with its assigned
+ * Version lives only as long as the transaction, and in autocommit it expires
+ * before publish_version() runs — the identity assertion then aborts a
+ * concurrent publish rather than freezing a document that misstates itself.
  */
 export async function publishVersion(
   db: Queryable,
   actor: Actor,
   options: PublishOptions,
 ): Promise<{ versionId: string; version: number; contentHash: string }> {
-  // The document as it will be served, and the bytes stored verbatim beside it.
-  const document = serializeProfileVersion(
-    { ...options.profile, versions: [options.content] },
-    0,
+  // THE FROZEN DOCUMENT CARRIES ITS OWN IDENTITY (spec §6.4): Version,
+  // Pub Date and Status are the Registry's to assign, and they are assigned
+  // INTO the document before it is hashed and stored — a copy of the contract
+  // that leaves the Registry must still say which version it is. (Two early
+  // versions were frozen without them — padi.test.claude-demo:1 and
+  // padi.lighting:1 — which is how this comment earned its capitals.)
+  //
+  // The number must agree with what publish_version() assigns, so take the
+  // same row lock FIRST: publish_version re-locks (a no-op inside this
+  // transaction) and recomputes the same max+1. The assertion below turns
+  // any future disagreement into a rollback rather than a lying document.
+  await db.query(`SELECT 1 FROM profile WHERE id = $1 FOR UPDATE`, [options.profileId]);
+  const { rows: maxRows } = await db.query<{ next: number }>(
+    `SELECT coalesce(max(version), 0) + 1 AS next FROM profile_version WHERE profile_id = $1`,
+    [options.profileId],
   );
+  const next = maxRows[0]!.next;
+  const publishedAt = options.publishedAt ?? new Date();
+
+  if (options.profile.version !== undefined && options.profile.version !== next) {
+    throw new Error(
+      `"${options.name}": the document carries Version ${options.profile.version} but the Registry would assign ${next} (spec §6.2: assignment is the Registry's)`,
+    );
+  }
+
+  const stamped = {
+    ...options.profile,
+    version: options.profile.version ?? next,
+    pubDate: options.profile.pubDate ?? publishedAt.toISOString(),
+    status: options.profile.status ?? ('Published' as const),
+  };
+
+  // The document as it will be served, and the bytes stored verbatim beside it.
+  const document = serializeProfileVersion({ ...stamped, versions: [options.content] }, 0);
   const servedBytes = Buffer.from(JSON.stringify(document), 'utf8');
   const hash = contentHash(document);
 
   const { rows } = await db.query<{ version_id: string; assigned_version: number }>(
-    `SELECT * FROM publish_version($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, now()))`,
+    `SELECT * FROM publish_version($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       options.profileId,
       JSON.stringify(document),
@@ -151,12 +186,17 @@ export async function publishVersion(
       options.grandfathered ?? false,
       options.pubDateApproximate ?? false,
       options.missingHeaderFields ?? [],
-      options.publishedAt ?? null,
+      publishedAt,
     ],
   );
 
   const published = rows[0];
   if (!published) throw new Error(`failed to publish a version of "${options.name}"`);
+  if (published.assigned_version !== stamped.version) {
+    throw new Error(
+      `"${options.name}": the frozen document says Version ${stamped.version} but the Registry assigned ${published.assigned_version} — refusing to publish a document that misstates its own identity`,
+    );
+  }
 
   await record(db, {
     actor: actor.actor,

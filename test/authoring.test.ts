@@ -166,6 +166,23 @@ describe('the lifecycle, end to end (§13)', () => {
     assert.equal(JSON.parse(resolved.body).Header.Name, 'padi.authored');
   });
 
+  test('the frozen document carries its own identity (spec §6.4)', async () => {
+    // The author submits WITHOUT Version, Pub Date and Status — the Registry
+    // assigns them, and it assigns them INTO the document before hashing: a
+    // copy that leaves the Registry must still say which version it is.
+    // (padi.test.claude-demo:1 and padi.lighting:1 were frozen without them;
+    // this is the test that no further version ever is.)
+    const resolved = await app.inject({ method: 'GET', url: '/padi.authored:1' });
+    const header = JSON.parse(resolved.body).Header;
+    assert.equal(header['Version'], '1');
+    assert.equal(header['Status'], 'Published');
+    assert.ok(header['Pub Date'], 'the assigned Pub Date is in the frozen Header');
+    // And the stamped date IS the row's publication instant, not a second clock.
+    const selection = await app.inject({ method: 'GET', url: '/padi.authored' });
+    const row = selection.json().versions.find((v: { version: number }) => v.version === 1);
+    assert.equal(new Date(header['Pub Date']).toISOString(), new Date(row.published).toISOString());
+  });
+
   test('an additive document publishes as version 2', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored/publish', headers: auth(PUBLISHER),
@@ -173,6 +190,9 @@ describe('the lifecycle, end to end (§13)', () => {
     });
     assert.equal(response.statusCode, 201, response.body);
     assert.equal(response.json().version, 2);
+
+    const resolved = await app.inject({ method: 'GET', url: '/padi.authored:2' });
+    assert.equal(JSON.parse(resolved.body).Header['Version'], '2');
   });
 
   test('deprecation excludes from selection and nothing else', async () => {

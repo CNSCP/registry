@@ -175,19 +175,45 @@ describe('publication and version assignment (§6.2, §13.4)', () => {
     const allocationId = await allocationFor('padi');
     const { id } = await registerName(db, ACTOR, { name: 'padi.concurrent', allocationId });
 
-    const publishOne = (n: number) => {
+    // Each publication on its own connection, in its own transaction — the
+    // store's calling convention (like record(), it takes the client of an
+    // open transaction; the row lock that makes the stamped Version agree
+    // with the assigned one lives only as long as the transaction does).
+    const publishOne = async (n: number) => {
       const profile = { ...sample(`p${n}`), name: 'padi.concurrent' };
-      return publishVersion(db, ACTOR, {
-        profileId: id,
-        name: 'padi.concurrent',
-        profile,
-        content: profile.versions[0]!,
-      });
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const published = await publishVersion(client, ACTOR, {
+          profileId: id,
+          name: 'padi.concurrent',
+          profile,
+          content: profile.versions[0]!,
+        });
+        await client.query('COMMIT');
+        return published;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
     };
 
     const results = await Promise.all([publishOne(1), publishOne(2), publishOne(3)]);
     const assigned = results.map((r) => r.version).sort();
     assert.deepEqual(assigned, [1, 2, 3], 'every publication got a distinct integer');
+
+    // And every frozen document agrees with the row it landed in (§6.4) —
+    // the serialization of the three transactions decided who is which.
+    for (const version of assigned) {
+      const { rows } = await db.query<{ content: { Header: Record<string, string> } }>(
+        `SELECT content FROM profile_version v JOIN profile p ON p.id = v.profile_id
+          WHERE p.name = 'padi.concurrent' AND v.version = $1`,
+        [version],
+      );
+      assert.equal(rows[0]!.content.Header['Version'], String(version));
+    }
   });
 
   test('served_bytes are stored verbatim and the hash is over the document', async () => {

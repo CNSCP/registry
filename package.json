@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify-spec": "node scripts/verify-spec.mjs",
+    "audit:headers": "node --env-file-if-exists=.env scripts/audit-headers.mjs",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
     "test:unit": "node --test --experimental-strip-types test/names.test.ts test/authorizes.test.ts test/policy-and-seed.test.ts test/serialization.test.ts test/spec2026.test.ts test/import.test.ts test/routes.test.ts",
     "test:integration": "node --test --experimental-strip-types test/integration.test.ts test/profiles.integration.test.ts test/resolution.test.ts test/catalog.test.ts test/allocation.test.ts test/authoring.test.ts test/seam-isolation.test.ts test/mcp.test.ts",
