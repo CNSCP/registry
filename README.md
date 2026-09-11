@@ -92,6 +92,27 @@ And Part Two's storage layer (§12), enough to hold what the import produces:
   because spec §6.4 permits it and forbidding them is the opposite non-conformance
 - Version assignment under a row lock — max+1, assigned by the Registry, never by the author
 
+**Distribution and local instances** ([`src/distribution/`](src/distribution/)) — §20, the
+piece spec §7.4 makes core ("a conforming Governor SHALL be able to operate from a local
+Registry instance"), and the first Phase 1 delivery:
+
+- `GET /distribution/snapshot` — everything published, at one instant (`REPEATABLE READ`),
+  with the chain head to follow from; `GET /distribution/journal?since=&limit=` — the §4.3
+  audit chain **projected**: every event in order, public acts with the exact preimage of
+  their `event_hash` (so anyone can recompute it), everything else as a redacted link;
+  `GET /distribution/status`. Part of the resolution profile, so every instance serves them too
+- **`npm run instance`** — the resolution server plus a follower: bootstraps from the
+  snapshot, follows the journal, and refuses to move its cursor past a page whose links,
+  hashes or documents do not verify. Answers byte-identically to the authoritative host
+  (proven in test over the whole corpus, `Content-Digest` included), keeps a verbatim copy
+  of the journal, writes no audit events of its own, and answers every non-GET with `405`
+  and the authoritative host's URL. See [`deploy/INSTANCE.md`](deploy/INSTANCE.md)
+- **`npm run verify-journal -- https://cp.cnscp.io --resolve`** — the same verifier as a
+  standalone tool: walks the chain, then checks that every published version the host
+  *serves* hashes to what its act *recorded*. No state, no credential — spec §9.3's
+  "independent parties can detect whether copies agree", done by one
+- Not yet: the signed anchor of the chain head (§25 Q12). `anchor: null` says so
+
 One §9.2 operator act exists — `POST /operator/allocations` (and `npm run allocate`),
 allocating a NEW Top Level Prefix as a Phase 0 operator ruling in the §10.2 bootstrap's
 mold: evidence named, policy consulted and never overridden, organization + allocation +
@@ -111,7 +132,7 @@ does not exist in the codebase — its absence is the enforcement.
 
 ```sh
 npm install
-npm test                  # 340 tests: 187 unit + 153 against a real Postgres
+npm test                  # 387 tests: unit + against a real Postgres (PGlite)
 npm run test:unit         # the pure logic, milliseconds
 npm run test:integration  # migrations, triggers, constraints, the hash chain
 npm run typecheck
@@ -228,7 +249,14 @@ src/
   seed/
     grandfathered.ts §10.2 as data
     run.ts           idempotent, audited loader
-test/                75 tests
+  distribution/
+    journal.ts       §20.1 wire types and the PURE verifier — shared by instance, CLI and tests
+    store.ts         snapshot and journal reads (audit projection / instance copy)
+    routes.ts        /distribution/*, and the instance's 405 refusals
+    follower.ts      bootstrap + sync: verify, apply, copy, advance — one transaction per page
+    verify-cli.ts    npm run verify-journal
+  instance-server.ts a local instance: resolution + follower (§7.4)
+test/                387 tests
 ```
 
 ## Three disciplines the code depends on

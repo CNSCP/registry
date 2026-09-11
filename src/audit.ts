@@ -38,7 +38,7 @@ export function hashSubject(value: unknown): string | null {
   return createHash('sha256').update(canonical(value)).digest('hex');
 }
 
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value instanceof Date) return JSON.stringify(value.toISOString());
@@ -58,11 +58,15 @@ export async function record(db: Queryable, event: AuditEvent): Promise<Recorded
     );
   }
 
+  // The payloads travel beside their hashes (migration 7). The chain commits
+  // to them through before_hash/after_hash exactly as before; storing them is
+  // what lets the journal (§20.1) publish the thing an independent party
+  // recomputes the hash from, rather than only the hash.
   const { rows } = await db.query<RecordedEvent>(
     `INSERT INTO audit_event
        (actor, actor_kind, principal, org_id, action, subject_type, subject_id,
-        before_hash, after_hash, rationale, request_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        before_hash, after_hash, rationale, request_id, before_payload, after_payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING seq, event_hash, prev_event_hash`,
     [
       event.actor,
@@ -76,6 +80,8 @@ export async function record(db: Queryable, event: AuditEvent): Promise<Recorded
       hashSubject(event.after),
       event.rationale ?? null,
       event.request_id ?? null,
+      event.before === undefined || event.before === null ? null : JSON.stringify(event.before),
+      event.after === undefined || event.after === null ? null : JSON.stringify(event.after),
     ],
   );
 
@@ -104,4 +110,55 @@ export type ChainBreak = {
 export async function verify(db: Queryable, fromSeq = 1): Promise<ChainBreak | null> {
   const { rows } = await db.query<ChainBreak>(`SELECT * FROM audit_chain_verify($1)`, [fromSeq]);
   return rows[0] ?? null;
+}
+
+/**
+ * The chain function of the audit-chain migration, in TypeScript.
+ *
+ * `at` must already be the string the trigger formats —
+ * `to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.USOF')` — which is
+ * why the journal (§20.1) serves `at` in exactly that form rather than as a
+ * parsed timestamp: a verifier concatenates and hashes, and never formats.
+ *
+ * Exists so that a party holding only the journal — an instance, or the
+ * standalone verifier — recomputes precisely what the database computed. If
+ * the migration's preimage ever changes, this must change with it, and the
+ * chain test that feeds real events through both will say so.
+ */
+export type ChainPreimage = {
+  prev_event_hash: string | null;
+  at: string;
+  actor: string;
+  actor_kind: string;
+  principal: string | null;
+  org_id: string | null;
+  action: string;
+  subject_type: string;
+  subject_id: string;
+  before_hash: string | null;
+  after_hash: string | null;
+  rationale: string | null;
+  request_id: string | null;
+};
+
+/** `to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.USOF')` — selected by the journal as the `at` string. */
+export const AT_FORMAT_SQL = `to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.USOF')`;
+
+export function eventHash(e: ChainPreimage): string {
+  const payload = [
+    e.prev_event_hash ?? '',
+    e.at,
+    e.actor,
+    e.actor_kind,
+    e.principal ?? '',
+    e.org_id ?? '',
+    e.action,
+    e.subject_type,
+    e.subject_id,
+    e.before_hash ?? '',
+    e.after_hash ?? '',
+    e.rationale ?? '',
+    e.request_id ?? '',
+  ].join('\x1f');
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
 }

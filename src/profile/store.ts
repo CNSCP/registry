@@ -66,7 +66,7 @@ export async function registerName(
 ): Promise<{ id: string; name: string }> {
   assertName(options.name);
 
-  const { rows } = await db.query<{ id: string; name: string }>(
+  const { rows } = await db.query<{ id: string; name: string; registered_at: Date }>(
     // Registration claims the name and nothing else (spec §6.3, §7.3): the
     // Registry holds no unpublished content, so there is nothing more to store.
     `INSERT INTO profile (name, allocation_id, registered_at, imported_from, registered_by)
@@ -77,7 +77,7 @@ export async function registerName(
        $4::text,
        $5::uuid
      )
-     RETURNING id, name`,
+     RETURNING id, name, registered_at`,
     [
       options.name,
       options.allocationId,
@@ -97,7 +97,14 @@ export async function registerName(
     action: 'profile.register',
     subject_type: 'profile',
     subject_id: profile.id,
-    after: { name: options.name, allocation_id: options.allocationId },
+    // registered_at is inside the hashed payload so the journal's "since
+    // when" (spec §9.3) is a verified fact for every registration from
+    // migration 7 on, not a courtesy read from the row (§20.1).
+    after: {
+      name: options.name,
+      allocation_id: options.allocationId,
+      registered_at: profile.registered_at.toISOString(),
+    },
     rationale: options.importedFrom
       ? `Imported from cp.padi.io as "${options.importedFrom}" (§10.4).`
       : null,
@@ -209,7 +216,10 @@ export async function publishVersion(
       name: options.name,
       version: published.assigned_version,
       content_hash: hash,
+      status: 'published',
+      published_at: publishedAt.toISOString(),
       grandfathered: options.grandfathered ?? false,
+      pub_date_approximate: options.pubDateApproximate ?? false,
       missing_header_fields: options.missingHeaderFields ?? [],
     },
     rationale: options.rationale ?? null,

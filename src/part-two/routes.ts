@@ -386,11 +386,13 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
     try {
       await client.query('BEGIN');
       // The discard guard trigger refuses if any version exists (spec §7.3).
-      const { rowCount } = await client.query(
-        `UPDATE profile SET discarded_at = now() WHERE name = $1 AND discarded_at IS NULL`,
+      const { rows: discardedRows } = await client.query<{ discarded_at: Date }>(
+        `UPDATE profile SET discarded_at = now() WHERE name = $1 AND discarded_at IS NULL
+         RETURNING discarded_at`,
         [name],
       );
-      if (!rowCount) {
+      const discarded = discardedRows[0];
+      if (!discarded) {
         await client.query('ROLLBACK');
         return structuredError(reply, 404, 'registration.not_found', 'registration', `"${name}" is not registered.`);
       }
@@ -399,6 +401,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
         actor_kind: authed.credential.kind,
         principal: authed.credential.principal ?? null,
         action: 'profile.discard', subject_type: 'profile', subject_id: name,
+        after: { name, discarded_at: discarded.discarded_at.toISOString() },
         rationale: 'Draft discarded before any publication; the name is released (spec §7.3).',
       });
       await client.query('COMMIT');

@@ -19,6 +19,7 @@
  */
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import type pg from 'pg';
 import type { Queryable } from '../db.ts';
 import { isTlp, nameProblem, tlpOf } from '../names.ts';
 import { availability } from '../policy.ts';
@@ -35,6 +36,8 @@ import {
   type ResolvedVersion,
   type VersionSummary,
 } from './store.ts';
+import { registerDistributionRoutes } from '../distribution/routes.ts';
+import type { Role } from '../distribution/store.ts';
 import {
   MEDIA,
   etagMatches,
@@ -49,6 +52,13 @@ export type ResolutionDeps = {
   db: Queryable;
   /** Rendering is a courtesy; a JSON-only instance is fully conforming (§19.1). */
   html?: boolean;
+  /**
+   * Distribution (§20) is part of the resolution profile and mounts here when
+   * `db` is a pool (the snapshot needs a transaction of its own). An instance
+   * says so, and names its upstream; the default is the authoritative store.
+   */
+  role?: Role;
+  upstream?: string;
 };
 
 /** `acme.meter.flow:2` → name and version. The colon is the version separator. */
@@ -86,7 +96,17 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
   const { db } = deps;
   const renderHtml = deps.html ?? true;
 
-  app.get('/health', async () => ({ ok: true, part: 'three', surface: 'resolution' }));
+  app.get('/health', async () => ({ ok: true, part: 'three', surface: 'resolution', role: deps.role ?? 'authoritative' }));
+
+  // §20: the feed is served wherever resolution is. It needs a pool because
+  // the snapshot takes a REPEATABLE READ transaction of its own.
+  if (typeof (db as Partial<pg.Pool>).connect === 'function') {
+    await registerDistributionRoutes(app, {
+      pool: db as pg.Pool,
+      role: deps.role ?? 'authoritative',
+      ...(deps.upstream ? { upstream: deps.upstream } : {}),
+    });
+  }
 
   /**
    * The root index. Every allocated Top Level Prefix — stable public facts
@@ -648,7 +668,7 @@ function renderAllocation(body: {
     .map(
       (n) =>
         `<tr><td><a href="${escape(n.href)}">${escape(n.name)}</a></td><td>${
-          n.versions.length === 0 ? '<em>none published</em>' : n.versions.map((v) => v.version).join(', ')
+          n.versions.length === 0 ? '<em>Unpublished</em>' : n.versions.map((v) => v.version).join(', ')
         }</td></tr>`,
     )
     .join('');
@@ -761,7 +781,7 @@ function renderCatalog(
          <td>${escape(e.title ?? '')}</td>
          <td>${
            e.versions.length === 0
-             ? '<em>none published</em>'
+             ? '<em>Unpublished</em>'
              : e.versions.map((v) => `${v.version}${v.status === 'deprecated' ? ' (deprecated)' : ''}`).join(', ')
          }</td></tr>`,
     )
