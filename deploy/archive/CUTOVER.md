@@ -29,7 +29,7 @@ Postgres StatefulSet up (`10-postgres.yaml`), then:
 ```sh
 kubectl cp cp_registry_YYYYMMDD.dump <postgres-pod>:/tmp/
 kubectl exec <postgres-pod> -- \
-  pg_restore --no-owner --no-privileges -d cp_registry /tmp/cp_registry_YYYYMMDD.dump
+  pg_restore --no-owner --no-privileges -U registry -W -d cp_registry /tmp/cp_registry_YYYYMMDD.dump
 ```
 
 ## 3. Run the bootstrap Job anyway

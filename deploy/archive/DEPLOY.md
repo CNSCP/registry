@@ -48,6 +48,12 @@ kubectl -n cp-registry rollout status statefulset/postgres
 ## 3. Bootstrap — migrations, seed, identity, import
 
 ```sh
+kubectl -n cp-registry create secret docker-registry ghcr-token \
+  --docker-server=ghcr.io \
+  --docker-username=mindovermiles262 \
+  --docker-password=YOUR_GITHUB_PAT \
+  --docker-email=andy@padi.io
+
 kubectl apply -f deploy/k8s/30-bootstrap-job.yaml
 kubectl -n cp-registry logs -f job/registry-bootstrap
 ```

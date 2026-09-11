@@ -24,9 +24,12 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-token
       containers:
         - name: bootstrap
           image: ghcr.io/cnscp/registry:latest
+          imagePullPolicy: Always
           env:
             - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }

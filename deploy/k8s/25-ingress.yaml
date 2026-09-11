@@ -1,0 +1,35 @@
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: cnscpio-cp-registry
+  namespace: cp-registry
+spec:
+  gateways:
+  - default/cnscpio
+  hosts:
+  - cp.cnscp.io
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: registry
+        port:
+          number: 80
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cp-registry
+  namespace: istio-system
+spec:
+  commonName: cp.cnscp.io
+  dnsNames:
+  - cp.cnscp.io
+  issuerRef:
+    name: letsencrypt-http-production
+    kind: ClusterIssuer
+  secretName: cp-cnscp-io-ssl-certificate

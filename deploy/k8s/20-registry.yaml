@@ -35,6 +35,8 @@ spec:
       labels:
         app: registry
     spec:
+      imagePullSecrets:
+        - name: ghcr-token
       containers:
         - name: registry
           image: ghcr.io/cnscp/registry:latest
@@ -75,30 +77,3 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { memory: 256Mi }
----
-# TLS and the hostname. cert-manager provisions the certificate; the
-# cluster-issuer name below is the common convention — adjust to whatever
-# issues cp.padi.io's certificate today.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: registry
-  namespace: cp-registry
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts: [cp.cnscp.io]
-      secretName: cp-cnscp-io-tls
-  rules:
-    - host: cp.cnscp.io
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: registry
-                port:
-                  number: 80
