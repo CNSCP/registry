@@ -76,7 +76,10 @@ describe('the root index', () => {
     assert.equal(response.headers['cache-control'], 'no-cache');
 
     const { allocations } = response.json() as {
-      allocations: { tlp: string; holder: string | null; grandfathered: boolean; names: number; published_versions: number }[];
+      allocations: {
+        tlp: string; holder: string | null; grandfathered: boolean;
+        names: number; published_versions: number; published_names: number; unpublished_names: number;
+      }[];
     };
 
     const padi = allocations.find((a) => a.tlp === 'padi');
@@ -85,6 +88,11 @@ describe('the root index', () => {
     assert.equal(padi.grandfathered, true);
     assert.ok(padi.names >= 20, `padi holds the bulk of the corpus (saw ${padi.names})`);
     assert.ok(padi.published_versions >= padi.names - 3, 'nearly every padi name has a published version');
+    // The published/unpublished split counts NAMES, and adds up. In the
+    // imported corpus exactly padi.appliance and padi.device are registered
+    // with nothing published (§12.1).
+    assert.equal(padi.published_names + padi.unpublished_names, padi.names);
+    assert.equal(padi.unpublished_names, 2);
 
     // A withheld Prefix has a real allocation row (§3.2) and appears; the
     // spec-reserved `test` has no row, ever, and does not.
@@ -113,6 +121,34 @@ describe('the root index', () => {
     assert.match(String(response.headers['content-type']), /text\/html/);
     assert.match(response.body, /cp:padi/);
     assert.match(response.body, /href="\/padi"/);
+  });
+});
+
+describe('the unversioned Profile page (HTML courtesy)', () => {
+  test('a browser sees the newest published version, with the others one click away', async () => {
+    // padi.game.presence has two published versions; the browser lands on v2.
+    const response = await app.inject({
+      method: 'GET', url: '/padi.game.presence', headers: { accept: 'text/html' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['cache-control'], 'no-cache', 'still the selection surface');
+    assert.match(response.body, /cp:padi\.game\.presence:2/);
+    assert.match(response.body, /href="\/padi\.game\.presence:1"/, 'the version strip links v1');
+
+    // The machine shape is untouched: still the version list, not a document.
+    const machine = await app.inject({ method: 'GET', url: '/padi.game.presence' });
+    const json = machine.json() as { versions: unknown[]; Header?: unknown };
+    assert.equal(json.Header, undefined);
+    assert.equal(json.versions.length, 2);
+  });
+
+  test('a name with nothing published keeps its registered-only page', async () => {
+    const response = await app.inject({
+      method: 'GET', url: '/padi.appliance', headers: { accept: 'text/html' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /No published versions/);
+    assert.match(response.body, /lives with its author/);
   });
 });
 

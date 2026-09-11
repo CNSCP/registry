@@ -191,6 +191,10 @@ export type IndexEntry = {
   grandfathered: boolean;
   names: number;
   published_versions: number;
+  /** Names with at least one published version. */
+  published_names: number;
+  /** Registered names with NOTHING published — §7.3's "seen for what it is". */
+  unpublished_names: number;
 };
 
 export async function resolveIndex(db: Queryable): Promise<IndexEntry[]> {
@@ -199,13 +203,16 @@ export async function resolveIndex(db: Queryable): Promise<IndexEntry[]> {
             o.name AS holder,
             a.grandfathered,
             coalesce(c.names, 0)::int AS names,
-            coalesce(c.versions, 0)::int AS published_versions
+            coalesce(c.versions, 0)::int AS published_versions,
+            coalesce(c.published_names, 0)::int AS published_names,
+            coalesce(c.names - c.published_names, 0)::int AS unpublished_names
        FROM allocation a
        LEFT JOIN organization o ON o.id = a.org_id
        LEFT JOIN (
          SELECT split_part(p.name, '.', 1) AS tlp,
                 count(DISTINCT p.id) AS names,
-                count(v.id) AS versions
+                count(v.id) AS versions,
+                count(DISTINCT p.id) FILTER (WHERE v.id IS NOT NULL) AS published_names
            FROM profile p
            LEFT JOIN profile_version v ON v.profile_id = p.id
           WHERE p.discarded_at IS NULL

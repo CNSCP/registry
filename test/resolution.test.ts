@@ -235,6 +235,29 @@ describe('the caching split (§18)', () => {
     assert.ok(document.Properties, 'deprecation must not mutate the contract');
   });
 
+  test('the versioned HTML rendering revalidates; only the machine shapes are immutable', async () => {
+    // The contract never changes; the page around it does. An immutable HTML
+    // cache pins early visitors to the first design for a year.
+    const html = await app.inject({
+      method: 'GET', url: '/padi.tstat.basic:1', headers: { accept: 'text/html' },
+    });
+    assert.equal(html.headers['cache-control'], 'no-cache');
+    assert.equal(html.headers['x-cp-status'], 'published');
+
+    const machine = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1' });
+    assert.match(String(machine.headers['cache-control']), /immutable/);
+  });
+
+  test('the selection ETag is representation-specific too — HTML and JSON are different bodies', async () => {
+    // The regression this guards: a browser holding the HTML page revalidates,
+    // the version list is unchanged, and a shared validator would 304 it onto
+    // a stale rendering forever.
+    const html = await app.inject({ method: 'GET', url: '/padi.tstat.basic', headers: { accept: 'text/html' } });
+    const json = await app.inject({ method: 'GET', url: '/padi.tstat.basic' });
+    assert.ok(html.headers['etag']);
+    assert.notEqual(html.headers['etag'], json.headers['etag']);
+  });
+
   test('the ETag is representation-specific — one contract, two entities', async () => {
     const spec = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1' });
     const legacy = await app.inject({

@@ -33,6 +33,7 @@ import {
   searchCatalog,
   type CatalogQuery,
   type ResolvedVersion,
+  type VersionSummary,
 } from './store.ts';
 import {
   MEDIA,
@@ -107,6 +108,8 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
         grandfathered: a.grandfathered,
         names: a.names,
         published_versions: a.published_versions,
+        published_names: a.published_names,
+        unpublished_names: a.unpublished_names,
         href: `/${a.tlp}`,
       })),
       catalog: '/profiles',
@@ -266,7 +269,12 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     // No version given: the SELECTION SURFACE (§17 Match, §18). Which versions
     // exist and which are Deprecated. Revalidated, never immutable.
     if (version === null) {
-      const etag = `"${name}-${registered.versions.map((v) => `${v.version}${v.status[0]}`).join('.')}"`;
+      // The representation is part of the entity here exactly as it is for a
+      // versioned fetch (see versionETag): the HTML page and the JSON list
+      // are different bodies with the same underlying facts, and a validator
+      // shared between them serves stale HTML after the renderer changes —
+      // the browser revalidates, the version list is unchanged, 304, old page.
+      const etag = `"${name}-${registered.versions.map((v) => `${v.version}${v.status[0]}`).join('.')}-${representation}"`;
       applyHeaders(reply, selectionHeaders(etag));
 
       if (etagMatches(reply.request.headers['if-none-match'], etag)) return reply.code(304).send();
@@ -284,6 +292,20 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       };
 
       if (representation === 'html' && renderHtml) {
+        // A courtesy of the HTML representation only: a browser landing on
+        // the unversioned URL sees the newest published version's document —
+        // what a new Connection would most likely bind — with the other
+        // versions one click away. The machine shapes are untouched: this is
+        // still the selection surface, still no-cache, and Match still reads
+        // the JSON list above.
+        const newestFirst = [...registered.versions].sort((a, b) => b.version - a.version);
+        const pick = newestFirst.find((v) => v.status === 'published') ?? newestFirst[0];
+        if (pick) {
+          const resolved = await resolveVersion(db, name, pick.version);
+          if (resolved) {
+            return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions));
+          }
+        }
         return reply.type(MEDIA.html).send(renderVersionList(body));
       }
       return reply.type(mediaTypeFor(representation)).send(body);
@@ -295,6 +317,18 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       return reply.code(404).send({ error: `no version ${version} of "${name}"`, name, version });
     }
 
+    // The CONTRACT is immutable and its machine representations are cached
+    // that way (§18). The HTML is a courtesy RENDERING of the contract — the
+    // page chrome and layout evolve while the document does not — so it is
+    // revalidated like every other page. A year-long immutable HTML cache
+    // would pin early visitors to the first design forever.
+    if (representation === 'html' && renderHtml) {
+      reply.header('cache-control', 'no-cache').header('vary', 'Accept');
+      reply.header('x-cp-status', resolved.status);
+      if (resolved.grandfathered) reply.header('x-cp-grandfathered', 'true');
+      return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions));
+    }
+
     const etag = versionETag(resolved.content_hash, representation);
     applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation));
 
@@ -304,10 +338,6 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     // version's Properties (§19).
     reply.header('x-cp-status', resolved.status);
     if (resolved.grandfathered) reply.header('x-cp-grandfathered', 'true');
-
-    if (representation === 'html' && renderHtml) {
-      return reply.type(MEDIA.html).send(renderVersion(resolved));
-    }
 
     if (representation === 'legacy') {
       // The deployed shape has no place for Channels or Default (8 Sept
@@ -412,18 +442,136 @@ function escape(value: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
-function page(title: string, body: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>${escape(title)}</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem}
-table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;vertical-align:top}
-code{background:#f4f4f4;padding:.1rem .3rem}.raw{margin:1.5rem 0;padding:.75rem;background:#f8f8f8;border-left:3px solid #666}</style>
-${body}`;
+/**
+ * The shared chrome — CNSCP/web's design system (cnscp.io style.css),
+ * inlined so the registry stays self-contained. Every rendered page goes
+ * through here: same tokens, same header, same footer, one site.
+ */
+const SITE_STYLE = `
+  :root{--blue:#0f6feb;--blue-dark:#0a55b8;--blue-ink:#0b2e5e;--ink:#17222f;--body:#3d4a59;
+    --muted:#6b7684;--bg:#fff;--panel:#f5f8fc;--border:#e3e9f1;
+    --card-shadow:0 1px 2px rgba(16,35,61,.04),0 8px 24px rgba(16,35,61,.06);
+    --radius:14px;--maxw:1080px}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--body);background:var(--bg);line-height:1.65;font-size:17px;
+    display:flex;flex-direction:column;min-height:100vh}
+  h1,h2,h3{color:var(--ink);line-height:1.25;letter-spacing:-.01em}
+  h1{font-size:1.9rem;margin-bottom:.4rem}h2{font-size:1.35rem;margin:1.8rem 0 .5rem}
+  h3{font-size:1.05rem;margin:1.4rem 0 .4rem}
+  p{margin-bottom:1.1rem}
+  a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+  main{flex:1}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+  .site-header{background:rgba(255,255,255,.92);border-bottom:1px solid var(--border)}
+  .site-header .bar{max-width:var(--maxw);margin:0 auto;padding:14px 22px;display:flex;align-items:center;gap:14px}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:700;font-size:1.1rem}
+  .brand img{width:30px;height:30px;border-radius:7px}
+  .brand:hover{text-decoration:none}
+  .site-nav{margin-left:auto}.site-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap}
+  .site-nav a{display:block;padding:7px 12px;border-radius:8px;color:var(--body);font-weight:500;font-size:.95rem}
+  .site-nav a:hover{background:var(--panel);color:var(--ink);text-decoration:none}
+  .site-nav a.active{color:var(--blue);font-weight:650}
+  .section{padding:40px 0 10px}
+  .section-intro{color:var(--muted);max-width:68ch;margin-bottom:22px}
+  .card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--card-shadow);padding:6px 0;margin:0 0 22px;overflow-x:auto}
+  table{border-collapse:collapse;width:100%;margin:0 0 1.1rem}
+  .card table{margin:0}
+  th,td{border-bottom:1px solid var(--border);padding:10px 16px;text-align:left;
+    vertical-align:top;font-size:.95rem}
+  tr:last-child td{border-bottom:0}
+  th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+  td.n,th.n{text-align:right}td.warn{color:#b45309;font-weight:650}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92em;
+    background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:1px 6px;color:var(--blue-ink)}
+  h1 code{font-size:.95em;background:transparent;border:0;padding:0;color:inherit}
+  .raw,.callout{border-left:4px solid var(--blue);background:var(--panel);
+    border-radius:0 10px 10px 0;padding:16px 20px;margin:1.4rem 0;font-size:.95rem}
+  .versions{margin:0 0 1.2rem}
+  .pill{display:inline-block;padding:4px 14px;border:1px solid var(--border);border-radius:999px;
+    font-size:.85rem;margin:0 6px 6px 0;background:#fff;color:var(--body)}
+  a.pill:hover{border-color:var(--blue);color:var(--blue);text-decoration:none}
+  .pill.current{border-color:var(--blue);background:var(--panel);color:var(--blue-ink);font-weight:650}
+  .pill .dep{color:#b45309}
+  details{margin:0 0 22px}summary{cursor:pointer;color:var(--muted);font-size:.95rem;padding:4px 2px}
+  details .card{margin-top:12px}
+  ul{margin:0 0 1.1rem 1.4rem}li{margin-bottom:.45rem}
+  em{color:var(--muted)}
+  .search-row{display:flex;gap:10px;flex-wrap:wrap;max-width:640px;margin-bottom:1.2rem}
+  .search-row input{flex:1 1 320px;min-width:0;font:inherit;padding:11px 16px;
+    border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--ink)}
+  .search-row input:focus{outline:2px solid var(--blue);outline-offset:-1px;border-color:var(--blue)}
+  .btn{display:inline-block;padding:11px 20px;border-radius:10px;font-weight:650;font-size:.98rem;
+    border:1px solid transparent;font-family:inherit;cursor:pointer}
+  .btn-primary{background:var(--blue);color:#fff}.btn-primary:hover{background:var(--blue-dark);text-decoration:none}
+  .hero{background:radial-gradient(1000px 420px at 85% -80px,rgba(15,111,235,.14),transparent 60%),
+    radial-gradient(700px 380px at 0% 110%,rgba(15,111,235,.08),transparent 55%),var(--panel);
+    border-bottom:1px solid var(--border);padding:64px 0 56px}
+  .hero .eyebrow{display:inline-block;font-size:.8rem;font-weight:700;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--blue);margin-bottom:14px}
+  .hero h1{font-size:2.6rem;max-width:24ch;margin-bottom:16px}
+  .hero .lead{font-size:1.15rem;max-width:62ch;margin-bottom:26px}
+  .hero .stats{margin-top:16px;font-size:.92rem;color:var(--muted)}
+  .hero .section-title,.section h2:first-child{margin-top:0}
+  .site-footer{background:#0e1726;color:#aab6c6;margin-top:48px}
+  .site-footer .tail{max-width:var(--maxw);margin:0 auto;padding:22px;font-size:.9rem;
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+  .site-footer a{color:#aab6c6}.site-footer a:hover{color:#fff}
+  @media (max-width:640px){body{font-size:16px}.hero{padding:44px 0 40px}.hero h1{font-size:2rem}}`;
+
+function chrome(title: string, active: 'registry' | 'catalog' | null, body: string): string {
+  const nav = (id: string, href: string, label: string) =>
+    `<li><a${active === id ? ' class="active"' : ''} href="${href}">${label}</a></li>`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(title)}</title>
+<link rel="icon" href="https://cnscp.io/favicon.ico">
+<style>${SITE_STYLE}</style></head><body>
+<header class="site-header"><div class="bar">
+  <a class="brand" href="https://cnscp.io"><img src="https://cnscp.io/CNSCP-Square.png" alt="">CNS/CP</a>
+  <nav class="site-nav"><ul>
+    ${nav('registry', '/', 'Registry')}
+    ${nav('catalog', '/profiles', 'Catalog')}
+    <li><a href="https://github.com/CNSCP/specification/blob/main/cns-cp.md">Specification</a></li>
+    <li><a href="https://cnscp.io/about.html">About CNS/CP</a></li>
+  </ul></nav>
+</div></header>
+${body}
+<footer class="site-footer"><div class="tail">
+  <span>&copy; 2026 Padi Inc. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
+  <span><a href="https://cnscp.io">cnscp.io</a> &middot;
+    <a href="https://github.com/CNSCP/registry">Source</a> &middot;
+    <a href="https://projectarete.io">Project Arete</a></span>
+</div></footer>
+</body></html>`;
 }
 
-function renderVersion(version: ResolvedVersion): string {
+/** An interior page: the chrome around one content section. */
+function page(title: string, body: string, active: 'registry' | 'catalog' | null = null): string {
+  return chrome(title, active, `<main><section class="section"><div class="wrap">${body}</div></section></main>`);
+}
+
+function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string {
   const document = version.content as { Header?: Record<string, unknown>; Properties?: Record<string, unknown[]> };
   const header = document.Header ?? {};
   const properties = document.Properties ?? {};
+
+  // The version switcher: every version of the name, newest first, with its
+  // publication date and status — plain links, no scripts. The one being
+  // viewed is marked rather than linked.
+  const strip = !all || all.length === 0 ? '' : `<p class="versions">${[...all]
+    .sort((a, b) => b.version - a.version)
+    .map((v) => {
+      const label = `v${v.version} &middot; ${escape(new Date(v.published_at).toISOString().slice(0, 10))}${
+        v.status === 'deprecated' ? ' &middot; <span class="dep">deprecated</span>' : ''
+      }`;
+      return v.version === version.version
+        ? `<span class="pill current">${label}</span>`
+        : `<a class="pill" href="/${escape(version.name)}:${v.version}">${label}</a>`;
+    })
+    .join(' ')}</p>`;
 
   const headerRows = Object.entries(header)
     .map(([k, v]) => `<tr><th>${escape(k)}</th><td>${escape(v)}</td></tr>`)
@@ -456,6 +604,7 @@ function renderVersion(version: ResolvedVersion): string {
     `<h1><code>cp:${escape(version.name)}:${version.version}</code></h1>
      <p>Status: <strong>${escape(version.status)}</strong>${version.grandfathered ? ' · grandfathered' : ''}
      ${version.pub_date_approximate ? ' · publication date approximate' : ''}</p>
+     ${strip}
      ${shortfall}
      <h2>Header</h2><table>${headerRows}</table>
      <h2>Properties</h2>${roleTables}
@@ -485,7 +634,7 @@ function renderVersionList(body: {
     `<h1><code>cp:${escape(body.name)}</code></h1>
      <p>Registered ${escape(new Date(body.registered).toISOString().slice(0, 10))}.</p>
      ${body.versions.length === 0
-       ? '<p>No published versions. The name is registered and holds a Draft (spec §7.3).</p>'
+       ? '<p>No published versions. The name is registered; its working document lives with its author (spec §7.3).</p>'
        : `<table><tr><th>Version</th><th>Status</th><th>Published</th></tr>${rows}</table>`}`,
   );
 }
@@ -512,6 +661,17 @@ function renderAllocation(body: {
   );
 }
 
+/**
+ * The front page. Most human visits to the canonical host land here, so it
+ * is a real landing page rather than a bare table — but it stays what every
+ * other page is: server-rendered, styled inline, zero scripts. The search
+ * box is a plain GET form over the catalog, and works in anything.
+ *
+ * The look is CNSCP/web's design system (cnscp.io style.css), inlined: same
+ * variables, hero treatment, buttons and footer, so the registry reads as
+ * part of the same site. Kept self-contained — the only cross-host assets
+ * are the brand marks, which degrade to text.
+ */
 function renderIndex(
   allocations: {
     tlp: string;
@@ -519,27 +679,67 @@ function renderIndex(
     grandfathered: boolean;
     names: number;
     published_versions: number;
+    published_names: number;
+    unpublished_names: number;
     href: string;
   }[],
 ): string {
-  const rows = allocations
-    .map(
-      (a) =>
-        `<tr><td><a href="${escape(a.href)}"><code>cp:${escape(a.tlp)}</code></a></td>
-         <td>${escape(a.holder ?? 'the operator')}${a.grandfathered ? ' · grandfathered' : ''}</td>
-         <td>${a.names}</td><td>${a.published_versions}</td></tr>`,
-    )
-    .join('');
+  const holdings = allocations.filter((a) => a.names > 0);
+  const empty = allocations.filter((a) => a.names === 0);
+  const names = allocations.reduce((sum, a) => sum + a.names, 0);
+  const versions = allocations.reduce((sum, a) => sum + a.published_versions, 0);
 
-  return page(
-    'Connection Profile Registry',
-    `<h1>Connection Profile Registry</h1>
-     <form action="/profiles" method="get"><input name="q" size="40"
-       placeholder="Search names, titles, descriptions"> <button>Search</button></form>
-     <table><tr><th>Prefix</th><th>Held by</th><th>Names</th><th>Published versions</th></tr>${rows}</table>
-     <p><a href="/profiles">The full catalog</a>. A Profile resolves at the root:
-     <code>GET /&lt;name&gt;</code>, <code>GET /&lt;name&gt;:&lt;version&gt;</code>.</p>`,
-  );
+  // Published and Unpublished count NAMES, one unit for an honest comparison:
+  // a Prefix heavy with registered-but-never-published names should look it.
+  const row = (a: (typeof allocations)[number]) =>
+    `<tr><td><a href="${escape(a.href)}"><code>cp:${escape(a.tlp)}</code></a></td>
+     <td>${escape(a.holder ?? 'the operator')}</td>
+     <td class="n">${a.published_names}</td>
+     <td class="n${a.unpublished_names > 0 ? ' warn' : ''}">${a.unpublished_names}</td></tr>`;
+
+  return chrome('CP Registry — Connection Profiles by name', 'registry', `
+<div class="hero"><div class="wrap">
+  <span class="eyebrow">The CP Registry</span>
+  <h1>Every Connection Profile, by name.</h1>
+  <p class="lead">The canonical registry of <span class="mono">cp:</span> Connection Profiles —
+    small, immutable contracts that systems resolve at connection time. One namespace, so every
+    use of CNS/CP stays interoperable.</p>
+  <form class="search-row" action="/profiles" method="get">
+    <input name="q" placeholder="Search profiles — a name, a word, a purpose&hellip;" autofocus>
+    <button class="btn btn-primary">Search</button>
+  </form>
+  <div class="stats">${allocations.length} Prefixes &middot; ${names} names &middot;
+    ${versions} published versions &middot;
+    ${allocations.reduce((s, a) => s + a.unpublished_names, 0)} unpublished &middot;
+    <a href="/profiles">browse the full catalog</a></div>
+</div></div>
+<main>
+<section class="section"><div class="wrap">
+  <h2>Top Level Prefixes</h2>
+  <p class="section-intro">Each Prefix is allocated to one holder; the names beneath it are that
+    holder's Profiles. Open a Prefix to see everything registered under it.</p>
+  <div class="card"><table>
+    <tr><th>Prefix</th><th>Held by</th><th class="n">Published</th><th class="n">Unpublished</th></tr>
+    ${holdings.map(row).join('')}
+  </table></div>
+  ${empty.length === 0 ? '' : `<details><summary>${empty.length} allocated Prefixes with no
+  registered names (infrastructure withholdings and new allocations)</summary>
+  <div class="card"><table>
+    <tr><th>Prefix</th><th>Held by</th><th class="n">Published</th><th class="n">Unpublished</th></tr>
+    ${empty.map(row).join('')}
+  </table></div></details>`}
+</div></section>
+<section class="section"><div class="wrap">
+  <h2>Resolving</h2>
+  <p class="section-intro">A Profile resolves at the root of this host —
+    no key, no account: resolution is public by specification.</p>
+  <div class="callout"><span class="mono">GET /&lt;name&gt;</span> lists a name's versions
+    &middot; <span class="mono">GET /&lt;name&gt;:&lt;version&gt;</span> is the immutable
+    contract itself — try <a href="/padi.lighting:2"><span class="mono">cp:padi.lighting:2</span></a>.
+    Machines receive <span class="mono">application/cp+json</span>; these pages are the same
+    documents, rendered.</div>
+</div></section>
+</main>`);
 }
 
 function renderCatalog(
@@ -582,16 +782,19 @@ function renderCatalog(
   return page(
     'Catalog — Connection Profile Registry',
     `<h1>Catalog</h1>
-     <form action="/profiles" method="get"><input name="q" size="40" value="${escape(q ?? '')}"
+     <p class="section-intro">Every registered name, searchable across names and published
+       Titles and Descriptions.</p>
+     <form class="search-row" action="/profiles" method="get"><input name="q" value="${escape(q ?? '')}"
        placeholder="Search names, titles, descriptions">${
          prefix ? `<input type="hidden" name="prefix" value="${escape(prefix)}">` : ''
-       } <button>Search</button></form>
+       } <button class="btn btn-primary">Search</button></form>
      ${prefix ? `<p>Names beginning <code>${escape(prefix)}.</code> as a string.</p>` : ''}
      <p>${showing}</p>
-     ${body.count === 0 ? '' : `<table><tr><th>Name</th><th>Title</th><th>Versions</th></tr>${rows}</table>`}
+     ${body.count === 0 ? '' : `<div class="card"><table><tr><th>Name</th><th>Title</th><th>Versions</th></tr>${rows}</table></div>`}
      ${paging ? `<p>${paging}</p>` : ''}
      <p class="raw">A text search over registered names and published Headers. No relationship may be
      inferred between names (spec §7.7); this is not an index. <a href="/">All Prefixes</a>.</p>`,
+    'catalog',
   );
 }
 

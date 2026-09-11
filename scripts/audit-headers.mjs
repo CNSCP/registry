@@ -13,6 +13,14 @@
 
 import pg from 'pg';
 
+/** Order-insensitive serialization, for comparing documents as documents. */
+function canonical(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`;
+}
+
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 const { rows } = await pool.query(`
@@ -40,10 +48,15 @@ for (const row of rows) {
   // A deprecated row still says Published in the frozen document — deprecation
   // is additive metadata (§19), never a mutation. Only absence is a problem.
 
-  // The stored bytes are what resolution replays; they must be the content.
+  // The stored bytes are what resolution replays; they must be the SAME
+  // DOCUMENT as the structured copy. Compare canonically (sorted keys):
+  // JSONB does not preserve key order, so a byte comparison would flag every
+  // row over ordering alone — order is presentation here, not content.
   if (row.served_bytes) {
-    const replayed = JSON.stringify(JSON.parse(Buffer.from(row.served_bytes).toString('utf8')));
-    if (replayed !== JSON.stringify(row.content)) problems.push('served_bytes disagree with content');
+    const replayed = JSON.parse(Buffer.from(row.served_bytes).toString('utf8'));
+    if (canonical(replayed) !== canonical(row.content)) {
+      problems.push('served_bytes disagree with content');
+    }
   }
 
   if (problems.length === 0) clean++;
