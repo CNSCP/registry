@@ -5,8 +5,8 @@ namespace `cp-registry`).
 
 1. `git push origin main`. CI runs the suite (including the real-PG16 job) and
    publishes `ghcr.io/cnscp/registry:latest`.
-2. **Wait for the publish job to finish.** A rollout started before it pulls the
-   previous `:latest` silently and looks like a deploy that changed nothing.
+2. **Wait for the publish job to finish** (Actions tab; ~90 s). The SHA-tagged image does
+   not exist until it has.
 3. **If the release adds a migration, run it on the cluster database first:**
    ```sh
    kubectl -n cp-registry exec deploy/registry -- npm run migrate up
@@ -17,8 +17,14 @@ namespace `cp-registry`).
    `record()` writes a column the database did not yet have. Migrations are additive
    and the previous image tolerates them, so running the migration before the rollout
    is always safe; the reverse is not.
-4. `kubectl -n cp-registry rollout restart deployment/registry` and
-   `kubectl -n cp-registry rollout status deployment/registry`.
+4. Roll out **by commit tag, not by restart.** CI tags every image with the full commit
+   SHA as well as `:latest`; naming the SHA makes the rollout deterministic, where a
+   `rollout restart` re-pulls `:latest` and quietly keeps the old image if the publish job
+   has not finished (it did exactly that on 11 Sept, twice):
+   ```sh
+   kubectl -n cp-registry set image deployment/registry registry=ghcr.io/cnscp/registry:$(git rev-parse HEAD)
+   kubectl -n cp-registry rollout status deployment/registry
+   ```
 5. Check: `curl -s https://cp.cnscp.io/health`, and
    `npm run verify-journal -- https://cp.cnscp.io --resolve` should end in `intact`.
 
