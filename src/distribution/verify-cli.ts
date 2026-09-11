@@ -7,16 +7,17 @@
  * continues from the last, recomputes every public event's hash from the
  * preimage it carries, checks every hashed subject and every published
  * document. With --resolve it then fetches each published version from the
- * same host and checks that what it SERVES hashes to what the act RECORDED —
- * "independent parties can detect whether copies agree" (spec §9.3), done by
- * one such party.
+ * same host and checks that the CONTRACT it serves — the document minus
+ * Status, Owner and Website, which spec §6.6 lets move after publication —
+ * is the contract the journal carries: "independent parties can detect
+ * whether copies agree" (spec §9.3), done by one such party.
  *
  * It holds no state and needs no credential. Anyone can run it against
  * anyone's instance, which is the point.
  */
 
-import { contentHash } from '../profile/store.ts';
-import { JOURNAL_FORMAT, subjectContentHash, verifyPage, type JournalPage, type PublicEntry } from './journal.ts';
+import { contractHash } from '../profile/store.ts';
+import { JOURNAL_FORMAT, verifyPage, type JournalPage, type PublicEntry } from './journal.ts';
 
 const args = process.argv.slice(2);
 const host = (args.find((a) => !a.startsWith('--')) ?? 'https://cp.cnscp.io').replace(/\/+$/, '');
@@ -85,25 +86,31 @@ console.log(`${host}: ${entries} event(s), ${publicActs} public act(s), ${docume
 
 if (resolveToo) {
   let agreed = 0;
+  let skipped = 0;
   for (const e of publications) {
     const ref = e.ref;
-    const recorded = subjectContentHash(e) ?? e.content_hash;
-    if (!ref || ref.version === undefined || !recorded) continue;
+    if (!ref || ref.version === undefined) continue;
+    if (e.document === undefined) {
+      skipped++; // an instance serves the journal from its bootstrap on; earlier documents are the upstream's to show
+      continue;
+    }
     const response = await fetch(`${host}/${ref.name}:${ref.version}`, { headers: { accept: 'application/cp+json; profile=2026' } });
     if (!response.ok) {
       failed++;
       console.error(`${ref.name}:${ref.version}: the host answered ${response.status} for a version its journal says it published`);
       continue;
     }
-    const served = contentHash(await response.json());
+    const served = contractHash(await response.json());
+    const recorded = contractHash(e.document);
     if (served !== recorded) {
       failed++;
-      console.error(`${ref.name}:${ref.version}: served content hashes to ${served}; the act recorded ${recorded}`);
+      console.error(`${ref.name}:${ref.version}: the served contract hashes to ${served}; the published document's contract hashes to ${recorded}`);
     } else {
       agreed++;
     }
   }
-  console.log(`${agreed} of ${publications.length} published version(s) served as recorded`);
+  if (skipped > 0) console.log(`${skipped} publication(s) precede this host's journal copy and were not compared`);
+  console.log(`${agreed} of ${publications.length - skipped} published version(s) serve the contract that was published`);
 }
 
 if (failed > 0) {

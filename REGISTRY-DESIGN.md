@@ -518,7 +518,7 @@ One row per registered name — **the entry, and nothing else.** Spec §7.3: "Of
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid | |
-| `name` | text unique | The registered name, ≥ 2 segments; never changes |
+| `name` | text, unique among live rows | The registered name, ≥ 2 segments; never changes. Uniqueness is a partial index over `discarded_at IS NULL` (migration 8), so a released name is free to register again (spec §7.3) while the released row stays as history |
 | `allocation_id` | uuid | Owner chain root, as returned by `authorizes()` at registration |
 | `registered_at` | timestamptz | Public fact (spec §7.3); confers nothing |
 | `registered_by` | uuid → app_user | The registrant the seam confirmed; the local fallback for edit-class acts during a Part One outage (§4.1 rule 2) |
@@ -697,7 +697,7 @@ Spec §7.4 says a cached version "can never be stale in any way that affects a m
 So the served document cannot be cached as a unit. Part Three splits it:
 
 - **Contract content** — Properties and the fixed Header fields. Immutable; cacheable indefinitely; `Cache-Control: public, max-age=31536000, immutable` on a versioned fetch.
-- **Mutable state** — `Status` and the two stewardship fields. Delivered through the journal (§20), not re-fetched per resolution, so a local instance learns of a deprecation by following the feed rather than by expiring a cache.
+- **Mutable state** — `Status` and the two stewardship fields. Delivered through the journal (§20), not re-fetched per resolution, so a local instance learns of a deprecation by following the feed rather than by expiring a cache. **On the wire they are overlaid onto the frozen document** (`part-three/present.ts`, 11 Sept): a versioned answer carries the current Status, Owner and Website in its Header — spec §9.3 says these three "may differ between answers" — while its ETag and `Content-Digest` remain the frozen content's, because the contract did not move. The bytes are replayed verbatim unless something has moved. The selection surface lists the current Owner and Website per version as well.
 
 Get this wrong and a local instance quietly keeps selecting a version its author deprecated a year ago. Nothing turns on the stewardship fields going stale, but Status is load-bearing.
 
@@ -723,7 +723,7 @@ Resolution is the root; `/profiles` is the catalog.
 
 **Requirements:**
 
-- **One name and version is one content commitment** (spec §9.3). Responses carry a strong ETag and a `Content-Digest` derived from `content_hash`, so independent parties can detect whether their copies agree.
+- **One name and version is one content commitment** (spec §9.3). Responses carry a strong ETag and a `Content-Digest` derived from `content_hash`, so independent parties can detect whether their copies agree. Two answers for one version agree on their *contract* — the document minus Status, Owner and Website (`contractHash`) — which is what `verify-journal --resolve` compares, since those three fields may legitimately differ between answers (§18).
 - **Deprecation is surfaced additively** — extra keys, never a mutation of the version's Properties.
 - **Answers are given without regard to the identity of the party asking** (spec §9.3) — with no exception, now that the Registry holds no unpublished content.
 - Availability is realm-grade, and local instances (§20) are the answer to the cases where it isn't.
@@ -869,7 +869,7 @@ Acceptance criteria for Parts Two and Three.
 | Answers that a name is registered, and since when | §12.1 `registered_at`; `GET /<name>/registration` |
 | SHALL NOT hold, serve, or answer for the content of an unpublished Profile; SHALL answer that a name is registered and since when | §12.1 has no content columns (migration 6); `:unpublished` never resolves (§13.3, §19); `GET /<name>/registration` |
 | SHALL NOT delete or alter a published version | §12.2 triggers; no operator endpoint exists (§9.2) |
-| Permits Header change only for lifecycle and stewardship fields | §12.2 columns; `PATCH …/header` restricted to Owner and Website |
+| Permits Header change only for lifecycle and stewardship fields | §12.2 columns; `PATCH …/header` restricted to Owner and Website; the answer carries the current values (§18 overlay) |
 | Serves without regard to the identity of the party presenting a name | §19 |
 | SHALL register any name meeting spec §7.2 and §7.3; refuses only on stated grounds | §14 — owner policy is not a Registry ground |
 | Same name and version never answered with differing content | §12.2 `served_bytes` + `content_hash` |

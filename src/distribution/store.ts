@@ -288,7 +288,12 @@ export async function journalFromAudit(db: Queryable, since: number, limit: numb
             a.grandfathered AS a_grandfathered
        FROM audit_event e
        LEFT JOIN profile p ON e.subject_type = 'profile' AND e.action <> 'profile.discard' AND p.id::text = e.subject_id
-       LEFT JOIN profile pd ON e.action = 'profile.discard' AND pd.name = e.subject_id
+       LEFT JOIN LATERAL (
+         SELECT discarded_at FROM profile
+          WHERE e.action = 'profile.discard' AND name = e.subject_id
+            AND discarded_at IS NOT NULL AND discarded_at <= e.at
+          ORDER BY discarded_at DESC LIMIT 1
+       ) pd ON true
        LEFT JOIN profile_version v ON e.subject_type = 'profile_version' AND v.id::text = e.subject_id
        LEFT JOIN profile vp ON vp.id = v.profile_id
        LEFT JOIN allocation a ON e.subject_type = 'allocation' AND a.id::text = e.subject_id

@@ -25,6 +25,9 @@ export type VersionSummary = {
   status: 'published' | 'deprecated';
   published_at: Date;
   content_hash: string;
+  /** Current stewardship fields (spec §6.6) — the selection surface is where current facts belong (§18). */
+  header_owner?: string | null;
+  header_website?: string | null;
 };
 
 export type ResolvedVersion = {
@@ -65,7 +68,7 @@ export async function resolveName(db: Queryable, name: string): Promise<Register
     discarded_at: Date | null;
   }>(
     `SELECT name, registered_at, imported_from, discarded_at
-       FROM profile WHERE name = $1`,
+       FROM profile WHERE name = $1 AND discarded_at IS NULL`,
     [name],
   );
 
@@ -75,7 +78,7 @@ export async function resolveName(db: Queryable, name: string): Promise<Register
   if (!profile || profile.discarded_at) return null;
 
   const versions = await db.query<VersionSummary>(
-    `SELECT version, status, published_at, content_hash
+    `SELECT version, status, published_at, content_hash, header_owner, header_website
        FROM profile_version v
        JOIN profile p ON p.id = v.profile_id
       WHERE p.name = $1

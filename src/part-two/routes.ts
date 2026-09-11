@@ -211,11 +211,12 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       id: string;
       discarded_at: Date | null;
     }>(
-      `SELECT id, discarded_at FROM profile WHERE name = $1`,
+      // Live registrations only: a released row keeps the name's history and
+      // blocks nothing (spec §7.3; migration 8).
+      `SELECT id, discarded_at FROM profile WHERE name = $1 AND discarded_at IS NULL`,
       [name],
     );
-    const row = rows[0];
-    return row && !row.discarded_at ? row : null;
+    return rows[0] ?? null;
   }
 
   // --- PUT /<name> and PUT /<name>:draft ------------------------------------

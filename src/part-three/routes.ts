@@ -38,6 +38,7 @@ import {
 } from './store.ts';
 import { registerDistributionRoutes } from '../distribution/routes.ts';
 import type { Role } from '../distribution/store.ts';
+import { presentVersion } from './present.ts';
 import {
   MEDIA,
   etagMatches,
@@ -84,7 +85,9 @@ function mediaTypeFor(representation: Representation): string {
  * stored copies can disagree and the mapper is proven lossless in the goldens.
  */
 function toLegacy(version: ResolvedVersion): unknown {
-  const profile = parseProfileVersion(version.content as never);
+  // From the ANSWER, not the frozen row: the legacy shape carries Owner and
+  // Website too (company / website), and they follow stewardship (§18).
+  const profile = parseProfileVersion(presentVersion(version).document as never);
   return serializeLegacy(profile);
 }
 
@@ -307,6 +310,10 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
           status: v.status,
           published: v.published_at,
           content_hash: v.content_hash,
+          // Stewardship as it stands now (spec §6.6) — additive keys on the
+          // revalidated surface, the same way status travels (§18, §19).
+          ...(v.header_owner ? { owner: v.header_owner } : {}),
+          ...(v.header_website ? { website: v.header_website } : {}),
           href: `/${name}:${v.version}`,
         })),
       };
@@ -380,10 +387,13 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     // §9.3 requires one name and version never be answered with differing
     // content; replaying the bytes is what guarantees it, rather than trusting
     // a serializer to be deterministic across deployments (§19.2).
-    if (resolved.served_bytes) {
-      return reply.type(MEDIA.spec2026).send(resolved.served_bytes.toString('utf8'));
-    }
-    return reply.type(MEDIA.spec2026).send(resolved.content);
+    // ...with the three mutable Header fields — Status, Owner, Website —
+    // overlaid from the row when they have moved since publication (spec
+    // §6.6, §9.3; part-three/present.ts). The ETag and Content-Digest above
+    // are the frozen content's: the contract did not change, and a cache
+    // that holds the old answer holds a correct contract with stale
+    // stewardship, which §18 accepts by design.
+    return reply.type(MEDIA.spec2026).send(presentVersion(resolved).text);
   }
 
   async function allocationPage(
@@ -574,7 +584,9 @@ function page(title: string, body: string, active: 'registry' | 'catalog' | null
 }
 
 function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string {
-  const document = version.content as { Header?: Record<string, unknown>; Properties?: Record<string, unknown[]> };
+  // The page presents the ANSWER (§19.1): current Status, Owner and Website
+  // over the frozen content, exactly as the machine shapes answer.
+  const document = presentVersion(version).document as { Header?: Record<string, unknown>; Properties?: Record<string, unknown[]> };
   const header = document.Header ?? {};
   const properties = document.Properties ?? {};
 

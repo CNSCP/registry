@@ -95,7 +95,7 @@ export async function bootstrap(pool: pg.Pool, upstream: string, fetch: Fetch = 
            (id, profile_id, version, content, served_bytes, content_hash, status, published_at,
             header_owner, header_website, grandfathered, pub_date_approximate, missing_header_fields)
          SELECT $1, p.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-           FROM profile p WHERE p.name = $2
+           FROM profile p WHERE p.name = $2 AND p.discarded_at IS NULL
          ON CONFLICT (id) DO NOTHING`,
         [
           v.id, v.name, v.version, JSON.stringify(v.document), servedBytes(v.document), v.content_hash,
@@ -233,7 +233,7 @@ async function apply(db: pg.PoolClient, entry: PublicEntry): Promise<void> {
             header_owner, header_website, grandfathered, pub_date_approximate, missing_header_fields)
          SELECT $1, p.id, $3, $4, $5, $6, 'published', coalesce($7::timestamptz, now()),
                 $8, $9, $10, $11, $12
-           FROM profile p WHERE p.name = $2
+           FROM profile p WHERE p.name = $2 AND p.discarded_at IS NULL
          ON CONFLICT (id) DO NOTHING`,
         [
           entry.subject_id, name, version, JSON.stringify(entry.document), servedBytes(entry.document), hash,

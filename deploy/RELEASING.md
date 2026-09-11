@@ -25,3 +25,6 @@ namespace `cp-registry`).
 Then on the Mac: `npm run migrate up` against the local `cp_registry`, and relaunch the
 local servers (`Start_registry.command`; if it refuses quietly, stale processes hold
 8080/8082 — `kill $(lsof -t -iTCP:8080 -iTCP:8082 -sTCP:LISTEN)` first).
+
+Migration history that needed step 3: migration 7 (`1730000007000_distribution`, 11 Sept —
+learned the hard way), migration 8 (`1730000008000_released-names-are-free`, 11 Sept).

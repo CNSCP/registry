@@ -79,7 +79,7 @@ export async function runImport(
       );
     }
 
-    const existing = await db.query<{ id: string }>(`SELECT id FROM profile WHERE name = $1`, [name]);
+    const existing = await db.query<{ id: string }>(`SELECT id FROM profile WHERE name = $1 AND discarded_at IS NULL`, [name]);
     let profileId = existing.rows[0]?.id;
 
     if (profileId) {

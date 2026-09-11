@@ -466,6 +466,24 @@ describe('the instance (§20, spec §7.4)', () => {
     assertSameSurface(await resolutionSurface(upstreamApp), await resolutionSurface(instanceApp));
   });
 
+  test('a released-then-re-registered name follows through the journal', async () => {
+    const put = await upstreamApp.inject({ method: 'PUT', url: '/padi.fed-released', headers: auth() });
+    assert.equal(put.statusCode, 201, put.body);
+    const pub = await upstreamApp.inject({ method: 'POST', url: '/padi.fed-released/publish', headers: auth(), payload: document('padi.fed-released', [p1], 'Registered again after release') });
+    assert.equal(pub.statusCode, 201, pub.body);
+
+    const result = await sync(instance.pool, fetchVia(upstreamApp));
+    assert.equal(result.applied, 2);
+    const held = await instanceApp.inject({ method: 'GET', url: '/padi.fed-released:1', headers: { accept: SPEC } });
+    assert.equal(held.statusCode, 200, held.body);
+    assertSameSurface(await resolutionSurface(upstreamApp), await resolutionSurface(instanceApp));
+
+    // The journal still tells the whole story: register, release, register, publish.
+    const { entries } = await allEntries(upstreamApp);
+    const story = entries.filter((e): e is PublicEntry => e.public && e.ref?.name === 'padi.fed-released').map((e) => e.action);
+    assert.deepEqual(story, ['profile.register', 'profile.discard', 'profile.register', 'profile.publish']);
+  });
+
   test('accepts no writes: every non-GET names the authoritative host (§4.4)', async () => {
     for (const [method, url] of [
       ['PUT', '/padi.instance-write'],

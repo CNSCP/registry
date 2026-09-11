@@ -24,6 +24,7 @@ import { registerResolutionRoutes } from '../src/part-three/routes.ts';
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { checkAdditivity } from '../src/profile/additivity.ts';
 import { verify } from '../src/audit.ts';
+import { contentHash, contractHash } from '../src/profile/store.ts';
 
 const DRAFTER: Credential = {
   token: 'drafter-'.padEnd(40, 'x'),
@@ -43,6 +44,7 @@ let harness: Harness;
 let db: pg.Pool;
 let app: FastifyInstance;
 
+const SPEC = 'application/cp+json; profile=2026';
 const auth = (credential: Credential) => ({ authorization: `Bearer ${credential.token}` });
 
 /** The author's working document — held HERE, not in the Registry (§7.3). */
@@ -204,6 +206,11 @@ describe('the lifecycle, end to end (§13)', () => {
     const still = await app.inject({ method: 'GET', url: '/padi.authored:1' });
     assert.equal(still.statusCode, 200, 'a deprecated version still resolves');
     assert.equal(still.headers['x-cp-status'], 'deprecated');
+    // The answer's Header says so too: Status "changes only as §6.3 provides"
+    // and "may differ between answers" (spec §6.6, §9.3) — the frozen bytes
+    // said Published, the answer says Deprecated, the contract is unchanged.
+    assert.equal(still.json().Header.Status, 'Deprecated');
+    assert.equal(still.json().Header.Version, '1');
   });
 
   test('PATCH :n/header accepts Owner and Website, and nothing else', async () => {
@@ -219,6 +226,47 @@ describe('the lifecycle, end to end (§13)', () => {
     });
     assert.equal(refused.statusCode, 422);
     assert.equal(refused.json().code, 'header.fixed_by_publication');
+  });
+
+  test('a stewardship change reaches the wire — every representation — while the contract does not move (spec §6.6, §9.3)', async () => {
+    const before = await app.inject({ method: 'GET', url: '/padi.authored:2', headers: { accept: SPEC } });
+    assert.equal(before.json().Header.Owner, 'Padi, Inc. (successor)', 'the earlier PATCH is already visible');
+
+    const patched = await app.inject({
+      method: 'PATCH', url: '/padi.authored:2/header', headers: auth(PUBLISHER),
+      payload: { Owner: 'Padi, Inc. (steward two)', Website: 'https://padi.io/authored-2' },
+    });
+    assert.equal(patched.statusCode, 200);
+
+    // 2026 shape: the Header answers with the current values...
+    const after = await app.inject({ method: 'GET', url: '/padi.authored:2', headers: { accept: SPEC } });
+    assert.equal(after.json().Header.Owner, 'Padi, Inc. (steward two)');
+    assert.equal(after.json().Header.Website, 'https://padi.io/authored-2');
+    // ...the contract has not moved: same content commitment, same validators...
+    assert.equal(after.headers['etag'], before.headers['etag']);
+    assert.equal(after.headers['content-digest'], before.headers['content-digest']);
+    assert.deepEqual(after.json().Properties, before.json().Properties);
+    assert.equal(contractHash(after.json()), contractHash(before.json()));
+    // ...and the frozen row is untouched: served_bytes still say what was published.
+    const { rows } = await db.query<{ served_bytes: Buffer; content_hash: string }>(
+      `SELECT v.served_bytes, v.content_hash FROM profile_version v JOIN profile p ON p.id = v.profile_id
+        WHERE p.name = 'padi.authored' AND v.version = 2`,
+    );
+    const frozen = JSON.parse(rows[0]!.served_bytes.toString('utf8'));
+    assert.equal(frozen.Header.Owner, 'Padi, Inc.');
+    assert.equal(contentHash(frozen), rows[0]!.content_hash);
+    assert.equal(contractHash(frozen), contractHash(after.json()));
+
+    // Legacy shape carries it as company / website.
+    const legacy = await app.inject({ method: 'GET', url: '/padi.authored:2', headers: { accept: 'application/json' } });
+    assert.equal(legacy.json().company, 'Padi, Inc. (steward two)');
+    assert.equal(legacy.json().website, 'https://padi.io/authored-2');
+
+    // The selection surface — where current facts belong (§18) — says it too.
+    const selection = await app.inject({ method: 'GET', url: '/padi.authored', headers: { accept: SPEC } });
+    const v2 = selection.json().versions.find((v: { version: number }) => v.version === 2);
+    assert.equal(v2.owner, 'Padi, Inc. (steward two)');
+    assert.equal(v2.website, 'https://padi.io/authored-2');
   });
 });
 
@@ -437,6 +485,37 @@ describe('release (§13.5, spec §7.3)', () => {
 
     const gone = await app.inject({ method: 'GET', url: '/padi.scratch' });
     assert.equal(gone.statusCode, 404);
+  });
+
+  test('a released name is free again: it can be registered, and published, anew (spec §7.3)', async () => {
+    // Released above. Register it again — a NEW registration, with its own date.
+    const again = await app.inject({ method: 'PUT', url: '/padi.scratch', headers: auth(DRAFTER) });
+    assert.equal(again.statusCode, 201, again.body);
+    assert.equal(again.json().existing, undefined, 'a fresh registration, not the released one revived');
+
+    const registration = await app.inject({ method: 'GET', url: '/padi.scratch/registration' });
+    assert.equal(registration.statusCode, 200);
+    assert.equal(registration.json().registered, true);
+
+    // The released row is still there, as history, and blocks nothing.
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM profile WHERE name = 'padi.scratch'`,
+    );
+    assert.equal(rows[0]!.n, '2');
+
+    // Publication lands on the live row, and the name resolves.
+    const pub = await app.inject({
+      method: 'POST', url: '/padi.scratch/publish', headers: auth(PUBLISHER),
+      payload: { ...workingDocument([propertyV1]), Header: { ...workingDocument([propertyV1]).Header, Name: 'padi.scratch' } },
+    });
+    assert.equal(pub.statusCode, 201, pub.body);
+    const resolved = await app.inject({ method: 'GET', url: '/padi.scratch:1', headers: { accept: SPEC } });
+    assert.equal(resolved.statusCode, 200);
+
+    // And now it is permanent: a second release is refused.
+    const permanent = await app.inject({ method: 'DELETE', url: '/padi.scratch', headers: auth(DRAFTER) });
+    assert.equal(permanent.statusCode, 409);
+    assert.equal(await verify(db), null);
   });
 
   test('a published name is permanent — release is a structured 409', async () => {

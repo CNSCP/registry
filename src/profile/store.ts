@@ -29,6 +29,23 @@ export function contentHash(document: unknown): string {
   return createHash('sha256').update(canonicalJson(document)).digest('hex');
 }
 
+/**
+ * The hash of a version's CONTRACT: the document minus the three Header
+ * fields the specification lets differ between answers — Status, Owner,
+ * Website (spec §6.2, §6.6, §9.3). Two answers for one name and version
+ * must agree on this, whatever their stewardship fields say; it is what an
+ * outside party compares (verify-cli), and what an instance's answer is
+ * held to.
+ */
+export function contractHash(document: unknown): string {
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) return contentHash(document);
+  const doc = document as Record<string, unknown>;
+  const header = doc['Header'];
+  if (header === null || typeof header !== 'object' || Array.isArray(header)) return contentHash(document);
+  const { Status: _s, Owner: _o, Website: _w, ...fixed } = header as Record<string, unknown>;
+  return contentHash({ ...doc, Header: fixed });
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
