@@ -528,6 +528,7 @@ const SITE_STYLE = `
   details .card{margin-top:12px}
   ul{margin:0 0 1.1rem 1.4rem}li{margin-bottom:.45rem}
   em{color:var(--muted)}
+  table.attrs{table-layout:fixed}table.attrs td{overflow-wrap:anywhere;vertical-align:top}
   .note{color:var(--muted);font-size:.92rem;margin-top:.5rem}
   .search-row{display:flex;gap:10px;flex-wrap:wrap;max-width:640px;margin-bottom:1.2rem}
   .search-row input{flex:1 1 320px;min-width:0;font:inherit;padding:11px 16px;
@@ -584,6 +585,49 @@ function page(title: string, body: string, active: 'registry' | 'catalog' | null
   return chrome(title, active, `<main><section class="section"><div class="wrap">${body}</div></section></main>`);
 }
 
+/**
+ * Column widths for the attribute tables, as a share of the table. Known
+ * attributes get a fixed share so every table on the page — Provider,
+ * Consumer, Channels — lays out the same; Description takes what is left;
+ * an attribute this map does not know gets a modest share of its own.
+ */
+const ATTRIBUTE_WIDTH: Record<string, number> = {
+  'Name': 14,
+  'Mandatory': 9,
+  'Propagate': 9,
+  'Default': 9,
+  'Sample': 12,
+  'Mode': 9,
+  'Protocol': 10,
+  'Provider Role': 11,
+  'Consumer Role': 11,
+};
+
+/** One table of attributes, every key a column, the Name in bold, widths fixed. */
+function attributeTable(keys: string[], items: Record<string, unknown>[]): string {
+  const fixed = keys.filter((k) => k !== 'Description').reduce((sum, k) => sum + (ATTRIBUTE_WIDTH[k] ?? 8), 0);
+  const cols = keys
+    .map((k) => {
+      const width = k === 'Description' ? Math.max(100 - fixed, 20) : (ATTRIBUTE_WIDTH[k] ?? 8);
+      return `<col style="width:${width}%">`;
+    })
+    .join('');
+  const head = keys.map((k) => `<th>${escape(k)}</th>`).join('');
+  const rows = items
+    .map(
+      (item) =>
+        `<tr>${keys
+          .map((k) => {
+            if (!(k in item)) return '<td><em>absent</em></td>';
+            const cell = escape(item[k]);
+            return k === 'Name' ? `<td><strong>${cell}</strong></td>` : `<td>${cell}</td>`;
+          })
+          .join('')}</tr>`,
+    )
+    .join('');
+  return `<table class="attrs"><colgroup>${cols}</colgroup><tr>${head}</tr>${rows}</table>`;
+}
+
 function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string {
   // The page presents the ANSWER (§19.1): current Status, Owner and Website
   // over the frozen content, exactly as the machine shapes answer.
@@ -628,18 +672,19 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
     return typeof party === 'string' && party.trim() !== '' ? `${role} (${escape(party)})` : role;
   };
 
+  // Both role tables share ONE column set — the union of every attribute any
+  // Property in either role carries — and fixed column widths, so Provider
+  // and Consumer line up instead of each table sizing itself to its own
+  // content. Every attribute of every Property, always: no column is dropped
+  // for being uninteresting — that is how key-presence flags get lost.
+  const propertyKeys = [
+    ...new Set((['Provider', 'Consumer'] as const).flatMap((role) => ((properties[role] ?? []) as Record<string, unknown>[]).flatMap((p) => Object.keys(p)))),
+  ];
   const roleTables = (['Provider', 'Consumer'] as const)
     .map((role) => {
       const list = (properties[role] ?? []) as Record<string, unknown>[];
       if (list.length === 0) return `<h3>${roleHeading(role)}</h3><p>No Properties.</p>`;
-      // Every attribute of every Property, always. No column is dropped for
-      // being uninteresting — that is how key-presence flags get lost.
-      const keys = [...new Set(list.flatMap((p) => Object.keys(p)))];
-      const head = keys.map((k) => `<th>${escape(k)}</th>`).join('');
-      const rows = list
-        .map((p) => `<tr>${keys.map((k) => `<td>${k in p ? escape(p[k]) : '<em>absent</em>'}</td>`).join('')}</tr>`)
-        .join('');
-      return `<h3>${roleHeading(role)}</h3><table><tr>${head}</tr>${rows}</table>`;
+      return `<h3>${roleHeading(role)}</h3>${attributeTable(propertyKeys, list)}`;
     })
     .join('');
 
@@ -650,11 +695,7 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
   const channelTable = (() => {
     if (channels.length === 0) return '';
     const keys = [...new Set(channels.flatMap((c) => Object.keys(c)))];
-    const head = keys.map((k) => `<th>${escape(k)}</th>`).join('');
-    const rows = channels
-      .map((c) => `<tr>${keys.map((k) => `<td>${k in c ? escape(c[k]) : '<em>absent</em>'}</td>`).join('')}</tr>`)
-      .join('');
-    return `<h2>Channels</h2><table><tr>${head}</tr>${rows}</table>
+    return `<h2>Channels</h2>${attributeTable(keys, channels)}
       <p class="note">A Channel is open to both roles from Bind and carries the protocol it names; where that
       protocol has roles of its own, Provider Role and Consumer Role say which Profile role plays which.
       Channels are fixed by the first published version (spec §6.5, §6.2).</p>`;

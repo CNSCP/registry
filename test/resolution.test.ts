@@ -258,6 +258,12 @@ describe('the caching split (§18)', () => {
     // party the Header names for it, so the table reads as who supplies what.
     assert.match(html.body, /<h3>Provider \(Equipment\)<\/h3>/);
     assert.match(html.body, /<h3>Consumer \(Thermostat\)<\/h3>/);
+    // Both role tables share one column set and one set of widths, so they
+    // line up; and every Name is in bold.
+    const colgroups = [...html.body.matchAll(/<table class="attrs"><colgroup>(.*?)<\/colgroup>/g)].map((m) => m[1]);
+    assert.equal(colgroups.length, 2);
+    assert.equal(colgroups[0], colgroups[1]);
+    assert.match(html.body, /<td><strong>[^<]+<\/strong><\/td>/);
   });
 
   test('a Channel-free version shows no Channels section; the section exists for versions that declare them', async () => {
