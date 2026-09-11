@@ -43,13 +43,13 @@ const EXPECTED = {
 // unpublished-content, Channels, Default — design v0.6 records the deltas.
 
 const here = dirname(fileURLToPath(import.meta.url));
-// The spec sits beside the design document, one level above this repository.
+// The spec is not public (design §25 Q10), so it sits one level above this repository, outside version control.
 const specPath = resolve(here, '../..', EXPECTED.file);
 
 if (!existsSync(specPath)) {
   console.log(`SKIP  ${EXPECTED.file} is not present.`);
   console.log(`      The 2026 revision is in draft and not public; this repository does not carry it.`);
-  console.log(`      Expected beside REGISTRY-DESIGN.md, at: ${specPath}`);
+  console.log(`      Expected one directory above the repository, at: ${specPath}`);
   process.exit(0);
 }
 

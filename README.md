@@ -1,11 +1,11 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`../REGISTRY-DESIGN.md`](../REGISTRY-DESIGN.md) v0.6.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.7.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
 by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
-checks that the copy beside the design document is still that one. When the anchor moves,
+checks that the copy one directory above this repository is still that one. When the anchor moves,
 the check fails until the design and code are re-read against the new revision; it did
 exactly that on 9 September, and design §24.5 records what the re-read changed (the
 Unpublished rename, the Registry holding no unpublished content, Channels, Default). The
