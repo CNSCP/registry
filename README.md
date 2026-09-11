@@ -106,7 +106,8 @@ Registry instance"), and the first Phase 1 delivery:
   hashes or documents do not verify. Answers byte-identically to the authoritative host
   (proven in test over the whole corpus, `Content-Digest` included), keeps a verbatim copy
   of the journal, writes no audit events of its own, and answers every non-GET with `405`
-  and the authoritative host's URL. See [`deploy/INSTANCE.md`](deploy/INSTANCE.md)
+  and the authoritative host's URL. See [`deploy/INSTANCE.md`](deploy/INSTANCE.md);
+  releasing to `cp.cnscp.io` itself is [`deploy/RELEASING.md`](deploy/RELEASING.md)
 - **`npm run verify-journal -- https://cp.cnscp.io --resolve`** — the same verifier as a
   standalone tool: walks the chain, then checks that every published version the host
   *serves* hashes to what its act *recorded*. No state, no credential — spec §9.3's
