@@ -605,14 +605,27 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
     })
     .join(' ')}</p>`;
 
+  // Website is a pointer (spec §6.6 NOTE); a browser should be able to follow
+  // it. Only http(s) values become links — anything else is shown as text.
+  const headerCell = (k: string, v: unknown): string =>
+    k === 'Website' && typeof v === 'string' && /^https?:\/\//i.test(v)
+      ? `<a href="${escape(v)}" rel="noopener nofollow">${escape(v)}</a>`
+      : escape(v);
   const headerRows = Object.entries(header)
-    .map(([k, v]) => `<tr><th>${escape(k)}</th><td>${escape(v)}</td></tr>`)
+    .map(([k, v]) => `<tr><th>${escape(k)}</th><td>${headerCell(k, v)}</td></tr>`)
     .join('');
+
+  // Each role group is headed by the role AND the party the Header names for
+  // it — "Provider (Controller)" — so the table reads as who supplies what.
+  const roleHeading = (role: 'Provider' | 'Consumer'): string => {
+    const party = header[role];
+    return typeof party === 'string' && party.trim() !== '' ? `${role} (${escape(party)})` : role;
+  };
 
   const roleTables = (['Provider', 'Consumer'] as const)
     .map((role) => {
       const list = (properties[role] ?? []) as Record<string, unknown>[];
-      if (list.length === 0) return `<h3>${role}</h3><p>No Properties.</p>`;
+      if (list.length === 0) return `<h3>${roleHeading(role)}</h3><p>No Properties.</p>`;
       // Every attribute of every Property, always. No column is dropped for
       // being uninteresting — that is how key-presence flags get lost.
       const keys = [...new Set(list.flatMap((p) => Object.keys(p)))];
@@ -620,7 +633,7 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
       const rows = list
         .map((p) => `<tr>${keys.map((k) => `<td>${k in p ? escape(p[k]) : '<em>absent</em>'}</td>`).join('')}</tr>`)
         .join('');
-      return `<h3>${role}</h3><table><tr>${head}</tr>${rows}</table>`;
+      return `<h3>${roleHeading(role)}</h3><table><tr>${head}</tr>${rows}</table>`;
     })
     .join('');
 

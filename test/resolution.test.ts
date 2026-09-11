@@ -248,6 +248,18 @@ describe('the caching split (§18)', () => {
     assert.match(String(machine.headers['cache-control']), /immutable/);
   });
 
+  test('the page links the Website and names each role\'s party in its heading', async () => {
+    const html = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1', headers: { accept: 'text/html' } });
+    assert.equal(html.statusCode, 200);
+    // Website is a pointer (spec §6.6 NOTE): followable, http(s) only, and
+    // still shown as its text.
+    assert.match(html.body, /<a href="https:\/\/padi\.io" rel="noopener nofollow">https:\/\/padi\.io<\/a>/);
+    // "Provider (Equipment)" / "Consumer (Thermostat)": the role, and the
+    // party the Header names for it, so the table reads as who supplies what.
+    assert.match(html.body, /<h3>Provider \(Equipment\)<\/h3>/);
+    assert.match(html.body, /<h3>Consumer \(Thermostat\)<\/h3>/);
+  });
+
   test('the selection ETag is representation-specific too — HTML and JSON are different bodies', async () => {
     // The regression this guards: a browser holding the HTML page revalidates,
     // the version list is unchanged, and a shared validator would 304 it onto
