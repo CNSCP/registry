@@ -27,7 +27,7 @@ import { applySeed } from '../src/seed/seed.ts';
 import { parseCorpus } from '../src/profile/legacy.ts';
 import { planImport } from '../src/profile/import.ts';
 import { runImport } from '../src/seed/import-profiles.ts';
-import { registerResolutionRoutes, splitReference } from '../src/part-three/routes.ts';
+import { registerResolutionRoutes, splitReference, renderVersionForTest } from '../src/part-three/routes.ts';
 import { negotiate, contentDigest, etagMatches } from '../src/part-three/http.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -258,6 +258,32 @@ describe('the caching split (§18)', () => {
     // party the Header names for it, so the table reads as who supplies what.
     assert.match(html.body, /<h3>Provider \(Equipment\)<\/h3>/);
     assert.match(html.body, /<h3>Consumer \(Thermostat\)<\/h3>/);
+  });
+
+  test('a Channel-free version shows no Channels section; the section exists for versions that declare them', async () => {
+    const plain = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1', headers: { accept: 'text/html' } });
+    assert.doesNotMatch(plain.body, /<h2>Channels<\/h2>/);
+    // The rendering itself, on a Channel-bearing document (spec §6.8's camera):
+    // every attribute of every Channel, as for Properties.
+    const camera = {
+      name: 'example.camera', version: 1, status: 'published' as const, published_at: new Date(),
+      content: {
+        Header: { Name: 'example.camera', Provider: 'Camera', Consumer: 'Viewer' },
+        Properties: { Provider: [{ Name: 'state', Mandatory: 'yes', Propagate: 'yes', Description: 's' }], Consumer: [] },
+        Channels: [
+          { Name: 'control', Mode: 'stream', Protocol: 'rtsp', 'Provider Role': 'server', 'Consumer Role': 'client', Description: 'c' },
+          { Name: 'media', Mode: 'datagram', Protocol: 'rtp', 'Provider Role': 'sender', 'Consumer Role': 'receiver', Description: 'm' },
+        ],
+      },
+      served_bytes: null, content_hash: 'x', header_owner: null, header_website: null,
+      grandfathered: false, pub_date_approximate: false, missing_header_fields: [],
+    };
+    const html = renderVersionForTest(camera);
+    assert.match(html, /<h2>Channels<\/h2>/);
+    assert.match(html, /<th>Provider Role<\/th>/);
+    assert.match(html, /<td>rtsp<\/td>/);
+    assert.match(html, /<td>datagram<\/td>/);
+    assert.match(html, /<h3>Provider \(Camera\)<\/h3>/);
   });
 
   test('the selection ETag is representation-specific too — HTML and JSON are different bodies', async () => {

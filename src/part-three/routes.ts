@@ -528,6 +528,7 @@ const SITE_STYLE = `
   details .card{margin-top:12px}
   ul{margin:0 0 1.1rem 1.4rem}li{margin-bottom:.45rem}
   em{color:var(--muted)}
+  .note{color:var(--muted);font-size:.92rem;margin-top:.5rem}
   .search-row{display:flex;gap:10px;flex-wrap:wrap;max-width:640px;margin-bottom:1.2rem}
   .search-row input{flex:1 1 320px;min-width:0;font:inherit;padding:11px 16px;
     border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--ink)}
@@ -586,9 +587,14 @@ function page(title: string, body: string, active: 'registry' | 'catalog' | null
 function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string {
   // The page presents the ANSWER (§19.1): current Status, Owner and Website
   // over the frozen content, exactly as the machine shapes answer.
-  const document = presentVersion(version).document as { Header?: Record<string, unknown>; Properties?: Record<string, unknown[]> };
+  const document = presentVersion(version).document as {
+    Header?: Record<string, unknown>;
+    Properties?: Record<string, unknown[]>;
+    Channels?: Record<string, unknown>[];
+  };
   const header = document.Header ?? {};
   const properties = document.Properties ?? {};
+  const channels = Array.isArray(document.Channels) ? document.Channels : [];
 
   // The version switcher: every version of the name, newest first, with its
   // publication date and status — plain links, no scripts. The one being
@@ -637,6 +643,23 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
     })
     .join('');
 
+  // Channels (spec §6.5): shown with the same discipline as Properties —
+  // every attribute of every Channel, nothing dropped. A Channel belongs to
+  // no role, so it gets its own section rather than a place under either.
+  // Omitted entirely when the document declares none, as most do.
+  const channelTable = (() => {
+    if (channels.length === 0) return '';
+    const keys = [...new Set(channels.flatMap((c) => Object.keys(c)))];
+    const head = keys.map((k) => `<th>${escape(k)}</th>`).join('');
+    const rows = channels
+      .map((c) => `<tr>${keys.map((k) => `<td>${k in c ? escape(c[k]) : '<em>absent</em>'}</td>`).join('')}</tr>`)
+      .join('');
+    return `<h2>Channels</h2><table><tr>${head}</tr>${rows}</table>
+      <p class="note">A Channel is open to both roles from Bind and carries the protocol it names; where that
+      protocol has roles of its own, Provider Role and Consumer Role say which Profile role plays which.
+      Channels are fixed by the first published version (spec §6.5, §6.2).</p>`;
+  })();
+
   const shortfall =
     version.missing_header_fields.length > 0
       ? `<p><strong>This version does not carry every REQUIRED Header field (spec §6.4):</strong>
@@ -653,6 +676,7 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
      ${shortfall}
      <h2>Header</h2><table>${headerRows}</table>
      <h2>Properties</h2>${roleTables}
+     ${channelTable}
      <div class="raw"><strong>The contract is the document, not this page.</strong>
        <code>GET /${escape(version.name)}:${version.version}</code>
        with <code>Accept: application/cp+json; profile=2026</code>.
@@ -855,3 +879,6 @@ function renderNotFound(name: string, beginning: string[]): string {
 
   return page(`${name} — not found`, `<h1><code>${escape(name)}</code></h1>${search}`);
 }
+
+/** The version page renderer, exposed for tests that feed it a document directly. */
+export const renderVersionForTest = renderVersion;
