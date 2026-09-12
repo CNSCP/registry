@@ -413,10 +413,32 @@ describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
 });
 
 describe('SCOPE CONTAINMENT — §23 priority 7', () => {
-  test('draft:write cannot publish — not even as a dry run, not even with a perfect payload', async () => {
+  test('draft:write CAN rehearse a publication — and the rehearsal writes nothing', async () => {
+    // 12 Sept 2026 ruling: the gate findings are not what the publish scope
+    // guards; the irreversible act is. An agent must be able to converge.
+    const before = await db.query(`SELECT count(*)::int AS n FROM profile_version`);
+    const rehearsal = await app.inject({
+      method: 'POST', url: '/padi.authored/publish?dry_run=true', headers: auth(DRAFTER),
+      payload: workingDocument([propertyV1, propertyV2]),
+    });
+    assert.equal(rehearsal.statusCode, 200, rehearsal.body);
+    assert.equal(rehearsal.json().dry_run, true);
+    assert.equal(typeof rehearsal.json().publishable, 'boolean');
+    const after = await db.query(`SELECT count(*)::int AS n FROM profile_version`);
+    assert.deepEqual(after.rows, before.rows, 'a draft:write rehearsal must write nothing');
+  });
+
+  test('a dry_run value other than true/false is refused, never guessed', async () => {
+    for (const url of ['/padi.authored/publish?dry_run=1', '/padi.authored/publish?dry_run=TRUE', '/padi.authored/publish?dry_run=yes']) {
+      const response = await app.inject({ method: 'POST', url, headers: auth(PUBLISHER), payload: workingDocument([propertyV1, propertyV2]) });
+      assert.equal(response.statusCode, 400, url);
+      assert.equal(response.json().code, 'grammar.dry_run', url);
+    }
+  });
+
+  test('draft:write cannot publish — only the literal dry_run=true is a rehearsal', async () => {
     for (const url of [
       '/padi.authored/publish',
-      '/padi.authored/publish?dry_run=true',
       '/padi.authored/publish?dry_run=false',
     ]) {
       const response = await app.inject({

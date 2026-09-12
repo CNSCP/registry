@@ -104,10 +104,16 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
    * The scope check — §15.2, §23 priority 7.
    *
    * One function on one choke point, so "a draft:write credential cannot
-   * publish, deprecate, or disclose under any endpoint or parameter
-   * combination" is a property of the structure rather than of each handler's
-   * diligence. dry_run is NOT an exemption: rehearsing publication still
-   * requires the publish scope, or the scope would leak what it guards.
+   * publish or deprecate under any endpoint or parameter combination" is a
+   * property of the structure rather than of each handler's diligence.
+   *
+   * A REHEARSAL is the one deliberate exception (12 Sept 2026, Anto's ruling):
+   * `POST …/publish?dry_run=true` needs draft:write, not publish. The gate
+   * findings it returns — Header completeness, additivity — are not what the
+   * publish scope guards; the irreversible act is. An agent holding
+   * draft:write alone must be able to converge on a publishable document
+   * (§15.1) and hand it to the person who holds publish. Only the literal
+   * string "true" is a rehearsal; anything else is the real act.
    */
   function requireScope(request: FastifyRequest, reply: FastifyReply, scope: Scope): Authed | null {
     const credential = authenticate(request);
@@ -431,7 +437,17 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   app.post<{ Params: { ref: string }; Querystring: { dry_run?: string }; Body: unknown }>(
     '/:ref/publish',
     async (request, reply) => {
-      const authed = requireScope(request, reply, 'publish');
+      // A rehearsal changes nothing and needs only draft:write; the act
+      // itself needs publish (see requireScope).
+      const dryRunParam = request.query.dry_run;
+      if (dryRunParam !== undefined && dryRunParam !== 'true' && dryRunParam !== 'false') {
+        // "TRUE", "1", "yes" must not silently become the irreversible act.
+        return structuredError(reply, 400, 'grammar.dry_run', 'grammar',
+          'dry_run is "true" or "false"; anything else is refused rather than guessed, because the alternative is an irreversible publication.',
+          { dry_run: dryRunParam });
+      }
+      const rehearsal = dryRunParam === 'true';
+      const authed = requireScope(request, reply, rehearsal ? 'draft:write' : 'publish');
       if (!authed) return;
 
       const { name, version } = splitReference(request.params.ref);
