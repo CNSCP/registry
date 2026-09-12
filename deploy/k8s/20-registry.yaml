@@ -47,25 +47,17 @@ spec:
               value: '0.0.0.0'
             - name: CP_PORT
               value: '8082'
-            - name: CP_AUTHOR_KIND
-              value: 'agent'
-            - name: CP_AUTHOR_PRINCIPAL
-              value: 'anto@padi.io'
-            # 'disclose' left with the 8 Sept spec revision. 'operator' exists
-            # (TLP allocation) and is DELIBERATELY absent here: granting it to
-            # the standing production credential is Anto's call, per act.
-            - name: CP_AUTHOR_SCOPES
-              value: 'register,steward,release,publish,deprecate'
+            # No CP_AUTHOR_* since 12 Sept 2026: every credential is a row,
+            # minted by its owner on /account (design §15.3) or by an operator
+            # from the CLI (§15.2). The host logs "authoring: credential table
+            # only". The Phase 0 bootstrap form is still honoured by the code
+            # if the variables are ever set again.
             - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
             - name: POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_PASSWORD } }
             - name: DATABASE_URL
               value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/cp_registry'
-            - name: CP_AUTHOR_TOKEN
-              valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_TOKEN } }
-            - name: CP_AUTHOR_USER_ID
-              valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_USER_ID } }
             # Sign-in and /account (design §15.3). The origin the Google and
             # GitHub callbacks are registered against; the client ids, client
             # secrets and the session-cookie key come from the registry-oauth

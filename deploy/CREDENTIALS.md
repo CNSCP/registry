@@ -103,13 +103,14 @@ Rotating a client secret: add the new one at the provider, update the secret
 roll the Deployment, then delete the old one at the provider. Rotating `CP_SESSION_SECRET`
 signs everyone out and nothing else.
 
-## The environment credential
+## The environment credential (retired)
 
-`CP_AUTHOR_TOKEN` / `CP_AUTHOR_USER_ID` (the `registry-auth` secret) is the Phase 0 bootstrap
-form and still works beside the table. Once you have signed in and minted your own tokens on
-`/account`, remove those variables from the Deployment and the secret; the host then logs
-"authoring: credential table only". Keep one `operator`-scoped token minted from the CLI
-before you do, or allocate the next Prefix from the CLI, which needs no token at all.
+`CP_AUTHOR_TOKEN` / `CP_AUTHOR_USER_ID` (the `registry-auth` secret) was the Phase 0 bootstrap
+form. It was removed from the Deployment on 12 September 2026, once the first tokens had been
+minted on `/account`; the host logs "authoring: credential table only". The code still honours
+the variables if a fresh deployment ever needs to mint its first row before anyone can sign in —
+but with sign-in configured that is never necessary: sign in, have the operator `member add`
+you, mint. Prefix allocation from the CLI needs no token at all.
 
 ## Local development
 
