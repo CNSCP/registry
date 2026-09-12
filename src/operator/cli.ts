@@ -1,6 +1,7 @@
 /**
  * The operator's command line — design §9.2, §15.2.
  *
+ *   npm run operator -- user find --email jane@cimetrics.com
  *   npm run operator -- user add --email jane@cimetrics.com --name "Jane Doe" --by anto@padi.io
  *   npm run operator -- member add --org "Cimetrics Inc." --user jane@cimetrics.com [--role admin] --by anto@padi.io
  *   npm run operator -- credential mint --user jane@cimetrics.com --kind human \
@@ -18,6 +19,12 @@
  * (deploy/CREDENTIALS.md), never through chat or email.
  *
  * Users are looked up by email or id; organizations by name or id.
+ *
+ * Since §15.3 people create their own accounts by signing in and mint their
+ * own tokens on /account, so the everyday operator act is `member add` on an
+ * email the person has already used to sign in — `user find` shows what the
+ * Registry knows about that email first. `user add` and `credential mint`
+ * remain for bootstrap and for agents that have no person to sign in.
  */
 
 import { parseArgs } from 'node:util';
@@ -50,6 +57,7 @@ const { values } = parseArgs({
 function usage(problem?: string): never {
   if (problem) console.error(`${problem}\n`);
   console.error(`Usage:
+  npm run operator -- user find --email <email>
   npm run operator -- user add --email <email> --name "<display name>" --by <operator email>
   npm run operator -- member add --org "<org name or id>" --user <email or id> [--role author|admin] --by <operator email>
   npm run operator -- credential mint --user <email or id> --kind human|service|agent [--principal <email>]
@@ -88,6 +96,36 @@ async function orgId(db: pg.PoolClient, ref: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  if (noun === 'user' && verb === 'find') {
+    if (!values.email) usage('user find needs --email.');
+    const email = values.email;
+    const users = await getPool().query<{ id: string; email: string; display_name: string | null; created: Date }>(
+      `SELECT id, email, display_name, created FROM app_user WHERE lower(email) = lower($1) ORDER BY created`,
+      [email],
+    );
+    if (users.rows.length === 0) {
+      console.log(`no user carries ${email}. They can create one by signing in at /account; or: npm run operator -- user add --email ${email} --name "…"`);
+      return;
+    }
+    for (const u of users.rows) {
+      console.log(`user ${u.id}  ${u.email}  ${u.display_name ?? ''}  created ${u.created.toISOString().slice(0, 10)}`);
+      const ids = await getPool().query<{ provider: string; email: string; last_seen: Date }>(
+        `SELECT provider::text AS provider, email, last_seen FROM user_identity WHERE app_user_id = $1 ORDER BY first_seen`, [u.id]);
+      for (const i of ids.rows) console.log(`  identity   ${i.provider.padEnd(7)} ${i.email}  last seen ${i.last_seen.toISOString().slice(0, 10)}`);
+      if (ids.rows.length === 0) console.log(`  identity   none — has not signed in yet`);
+      const ms = await getPool().query<{ name: string; role: string; prefixes: string[] | null }>(
+        `SELECT o.name, m.role::text AS role,
+                (SELECT array_agg(a.tlp ORDER BY a.tlp) FROM allocation a WHERE a.org_id = o.id AND a.status IN ('active','locked')) AS prefixes
+           FROM member m JOIN organization o ON o.id = m.org_id WHERE m.user_id = $1 ORDER BY o.name`, [u.id]);
+      for (const m of ms.rows) console.log(`  member     ${m.role.padEnd(7)} ${m.name}  →  ${(m.prefixes ?? []).map((t) => `cp:${t}`).join(' ') || '(no Prefix held)'}`);
+      if (ms.rows.length === 0) console.log(`  member     of nothing — tokens will be refused with no-membership until: npm run operator -- member add --org "…" --user ${u.email} --by <you>`);
+      const cs = await getPool().query<{ id: string; label: string; kind: string; scopes: string[]; revoked_at: Date | null; last_used_at: Date | null }>(
+        `SELECT id, label, kind, scopes, revoked_at, last_used_at FROM credential WHERE app_user_id = $1 ORDER BY created_at`, [u.id]);
+      for (const c of cs.rows) console.log(`  credential ${c.id}  ${c.kind.padEnd(7)} ${c.scopes.join(',')}  "${c.label}"  ${c.revoked_at ? 'REVOKED' : c.last_used_at ? `last used ${c.last_used_at.toISOString().slice(0, 10)}` : 'never used'}`);
+    }
+    return;
+  }
+
   if (noun === 'user' && verb === 'add') {
     if (!values.email || !values.name) usage('user add needs --email and --name.');
     const who = requireBy();

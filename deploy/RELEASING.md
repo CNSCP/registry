@@ -36,3 +36,8 @@ Migration history that needed step 3: migration 7 (`1730000007000_distribution`,
 learned the hard way), migration 8 (`1730000008000_released-names-are-free`, 11 Sept).
 Migration 10 (`1730000010000_credentials`, 12 Sept) likewise — and after it, mint the real
 tokens per `deploy/CREDENTIALS.md` before removing `CP_AUTHOR_*` from the Deployment.
+Migration 11 (`1730000011000_identity-and-sessions`, 12 Sept) likewise; the same release
+adds `envFrom: registry-oauth` and `CP_PUBLIC_ORIGIN` to the Deployment (`kubectl apply -f
+deploy/k8s/20-registry.yaml` before the `set image`), so the `registry-oauth` secret must
+exist first — it does since 12 Sept. After the rollout, sign in at
+https://cp.cnscp.io/account, mint your own tokens there, and then retire `CP_AUTHOR_*`.

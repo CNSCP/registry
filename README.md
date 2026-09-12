@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.9.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.10.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
 by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
@@ -67,6 +67,12 @@ Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publ
 - **Credentials as rows** — a `credential` table of hashed tokens with scopes, minted and revoked
   with `npm run operator -- credential mint | revoke | list` (plus `user add`, `member add`),
   every act audited; the token is shown once and stored nowhere. [`deploy/CREDENTIALS.md`](deploy/CREDENTIALS.md)
+- **Self-service identity** (§15.3) — a person signs in with Google or GitHub at `/account`
+  (the Registry holds no passwords), is linked to their user by the provider's subject or a
+  verified email, and mints and revokes their own tokens there; `operator` is never mintable
+  on the page. Membership — where a token may act — stays an operator act by email
+  (`npm run operator -- member add`, with `user find --email` beside it). A session is honoured
+  on `/auth/*` and `/account` only; no act on the Registry is ever authenticated by a cookie
 
 The MCP server ([`src/mcp/server.ts`](src/mcp/server.ts)) — §15.1's "worth building early",
 since hand-authoring by an assistant is the Phase 0 publication path:

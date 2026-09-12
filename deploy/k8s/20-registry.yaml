@@ -66,6 +66,15 @@ spec:
               valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_TOKEN } }
             - name: CP_AUTHOR_USER_ID
               valueFrom: { secretKeyRef: { name: registry-auth, key: CP_AUTHOR_USER_ID } }
+            # Sign-in and /account (design §15.3). The origin the Google and
+            # GitHub callbacks are registered against; the client ids, client
+            # secrets and the session-cookie key come from the registry-oauth
+            # secret (deploy/CREDENTIALS.md). With all six present the host
+            # mounts /auth/* and /account; with none it runs without sign-in.
+            - name: CP_PUBLIC_ORIGIN
+              value: 'https://cp.cnscp.io'
+          envFrom:
+            - secretRef: { name: registry-oauth }
           readinessProbe:
             httpGet: { path: /health, port: 8082 }
             initialDelaySeconds: 3
