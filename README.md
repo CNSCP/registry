@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.8.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.9.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
 by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
@@ -61,9 +61,12 @@ Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publ
 - **The additivity gate** (§23 priority 2): removal, redefinition, and mandatory additions
   refused with structured `{ code, gate, property, ... }` findings an agent can act on
 - `?dry_run=true` runs every gate and provably writes nothing
-- Credential scopes `draft:write · publish · deprecate · operator` (§15.2) — a machine author
-  holds `draft:write` alone; the disclosure act left the Registry with the 8 Sept revision, and
-  `operator` guards the one §9.2 act below
+- Credential scopes `register · steward · release · publish · deprecate · operator` (§15.2),
+  one per kind of act — a machine author holds the first three and can prepare and rehearse
+  everything, publish nothing; `operator` guards the §9.2 acts
+- **Credentials as rows** — a `credential` table of hashed tokens with scopes, minted and revoked
+  with `npm run operator -- credential mint | revoke | list` (plus `user add`, `member add`),
+  every act audited; the token is shown once and stored nowhere. [`deploy/CREDENTIALS.md`](deploy/CREDENTIALS.md)
 
 The MCP server ([`src/mcp/server.ts`](src/mcp/server.ts)) — §15.1's "worth building early",
 since hand-authoring by an assistant is the Phase 0 publication path:
@@ -134,7 +137,7 @@ does not exist in the codebase — its absence is the enforcement.
 
 ```sh
 npm install
-npm test                  # 387 tests: unit + against a real Postgres (PGlite)
+npm test                  # 410+ tests: unit + against a real Postgres (PGlite)
 npm run test:unit         # the pure logic, milliseconds
 npm run test:integration  # migrations, triggers, constraints, the hash chain
 npm run typecheck

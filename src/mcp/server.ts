@@ -153,7 +153,7 @@ server.registerTool(
       'every prior published version §6.2) and reports exactly what a real publish would do, ' +
       'changing NOTHING and retaining nothing. Converge here before risking the irreversible act. ' +
       'Findings are structured: each names its gate, the offending element, and the rule. ' +
-      'Needs only the draft:write scope: an agent may converge here and hand a publishable document ' +
+      'Needs only the register scope: an agent may converge here and hand a publishable document ' +
       'to the person who holds publish. ' +
       DOCUMENT_SHAPE,
     inputSchema: {

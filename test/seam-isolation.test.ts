@@ -44,13 +44,13 @@ const AUTHOR: Credential = {
   token: 'author-'.padEnd(40, 'z'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate'],
 };
 const STRANGER: Credential = {
   token: 'stranger-'.padEnd(40, 'q'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate'],
 };
 
 const auth = (c: Credential) => ({ authorization: `Bearer ${c.token}` });

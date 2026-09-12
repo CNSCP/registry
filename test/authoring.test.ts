@@ -7,7 +7,7 @@
  * with nothing retained. The author's workspace is the author's own; here it
  * is a local variable, which is exactly the point.
  *
- * The scope-containment block is §23 priority 7: "a draft:write credential
+ * The scope-containment block is §23 priority 7: "a credential without publish
  * cannot publish or deprecate under any endpoint or parameter combination;
  * and dry_run=true provably writes nothing."
  */
@@ -31,13 +31,13 @@ const DRAFTER: Credential = {
   userId: '', // filled in before()
   kind: 'agent',
   principal: 'anto@padi.io',
-  scopes: ['draft:write'],
+  scopes: ['register', 'steward', 'release'],
 };
 const PUBLISHER: Credential = {
   token: 'publisher-'.padEnd(40, 'y'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate'],
 };
 
 let harness: Harness;
@@ -413,7 +413,7 @@ describe('the additivity gate (§23 priority 2, spec §6.2)', () => {
 });
 
 describe('SCOPE CONTAINMENT — §23 priority 7', () => {
-  test('draft:write CAN rehearse a publication — and the rehearsal writes nothing', async () => {
+  test('register CAN rehearse a publication — and the rehearsal writes nothing', async () => {
     // 12 Sept 2026 ruling: the gate findings are not what the publish scope
     // guards; the irreversible act is. An agent must be able to converge.
     const before = await db.query(`SELECT count(*)::int AS n FROM profile_version`);
@@ -425,7 +425,7 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
     assert.equal(rehearsal.json().dry_run, true);
     assert.equal(typeof rehearsal.json().publishable, 'boolean');
     const after = await db.query(`SELECT count(*)::int AS n FROM profile_version`);
-    assert.deepEqual(after.rows, before.rows, 'a draft:write rehearsal must write nothing');
+    assert.deepEqual(after.rows, before.rows, 'a register-scope rehearsal must write nothing');
   });
 
   test('a dry_run value other than true/false is refused, never guessed', async () => {
@@ -436,7 +436,7 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
     }
   });
 
-  test('draft:write cannot publish — only the literal dry_run=true is a rehearsal', async () => {
+  test('the preparatory scopes cannot publish — only the literal dry_run=true is a rehearsal', async () => {
     for (const url of [
       '/padi.authored/publish',
       '/padi.authored/publish?dry_run=false',
@@ -451,12 +451,45 @@ describe('SCOPE CONTAINMENT — §23 priority 7', () => {
     }
   });
 
-  test('draft:write cannot deprecate', async () => {
+  test('the preparatory scopes cannot deprecate', async () => {
     const response = await app.inject({
       method: 'POST', url: '/padi.authored:2/deprecate', headers: auth(DRAFTER),
     });
     assert.equal(response.statusCode, 403);
     assert.equal(response.json().required_scope, 'deprecate');
+  });
+
+  test('each preparatory scope covers exactly its act: register / steward / release', async () => {
+    // Three single-scope credentials, so containment is checked per scope
+    // rather than per bundle (12 Sept 2026 split of draft:write).
+    const mk = (scope: 'register' | 'steward' | 'release'): Credential => ({
+      token: `${scope}-only-`.padEnd(40, 'z'), userId: DRAFTER.userId, kind: 'agent', principal: 'anto@padi.io', scopes: [scope],
+    });
+    const only = { register: mk('register'), steward: mk('steward'), release: mk('release') };
+    const scoped = Fastify();
+    await registerAuthoringRoutes(scoped, {
+      pool: db, ownership: new PgOwnershipStore(db), credentials: Object.values(only),
+    });
+    await scoped.ready();
+    try {
+      const attempts: [keyof typeof only, string, string, unknown, number][] = [
+        ['register', 'PUT', '/padi.scoped-a', undefined, 201],
+        ['steward', 'PUT', '/padi.scoped-b', undefined, 403],
+        ['release', 'PUT', '/padi.scoped-c', undefined, 403],
+        ['register', 'POST', '/padi.scoped-a/publish?dry_run=true', { ...workingDocument([propertyV1]), Header: { ...workingDocument([propertyV1]).Header, Name: 'padi.scoped-a' } }, 200],
+        ['steward', 'POST', '/padi.scoped-a/publish?dry_run=true', { ...workingDocument([propertyV1]), Header: { ...workingDocument([propertyV1]).Header, Name: 'padi.scoped-a' } }, 403],
+        ['steward', 'PATCH', '/padi.authored:2/header', { Website: 'https://padi.io/scoped' }, 200],
+        ['register', 'PATCH', '/padi.authored:2/header', { Website: 'https://padi.io/scoped' }, 403],
+        ['release', 'DELETE', '/padi.scoped-a', undefined, 204],
+        ['register', 'DELETE', '/padi.authored', undefined, 403],
+      ];
+      for (const [who, method, url, payload, expected] of attempts) {
+        const response = await scoped.inject({ method: method as never, url, headers: { authorization: `Bearer ${only[who].token}` }, ...(payload ? { payload } : {}) });
+        assert.equal(response.statusCode, expected, `${who}: ${method} ${url} → ${response.body}`);
+      }
+    } finally {
+      await scoped.close();
+    }
   });
 
   test('no token at all is a 401 on every write verb', async () => {

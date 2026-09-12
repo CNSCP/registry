@@ -28,13 +28,13 @@ const OPERATOR: Credential = {
   token: 'operator-'.padEnd(40, 'o'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate', 'operator'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate', 'operator'],
 };
 const AUTHOR: Credential = {
   token: 'author-'.padEnd(40, 'a'),
   userId: '',
   kind: 'human',
-  scopes: ['draft:write', 'publish', 'deprecate'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate'],
 };
 
 const auth = (c: Credential) => ({ authorization: `Bearer ${c.token}` });

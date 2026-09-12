@@ -55,7 +55,7 @@ spec:
             # (TLP allocation) and is DELIBERATELY absent here: granting it to
             # the standing production credential is Anto's call, per act.
             - name: CP_AUTHOR_SCOPES
-              value: 'draft:write,publish,deprecate'
+              value: 'register,steward,release,publish,deprecate'
             - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
             - name: POSTGRES_PASSWORD

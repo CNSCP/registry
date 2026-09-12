@@ -53,7 +53,7 @@ const OPERATOR: Credential = {
   userId: '',
   kind: 'agent',
   principal: 'anto@padi.io',
-  scopes: ['draft:write', 'publish', 'deprecate', 'operator'],
+  scopes: ['register', 'steward', 'release', 'publish', 'deprecate', 'operator'],
 };
 const auth = () => ({ authorization: `Bearer ${OPERATOR.token}` });
 

@@ -14,12 +14,16 @@
  *   - dry_run on publish, running every gate and changing nothing
  *   - idempotent writes; registration is naturally idempotent on the name
  *
- * CREDENTIAL SCOPES (§15.2). Publication is the one irreversible act left on
- * this surface — the 8 Sept revision moved unpublished content and its
- * disclosure out of the Registry (spec §7.3) — so credentials are scoped
- * `draft:write · publish · deprecate`, and a machine author normally holds
- * draft:write alone: registration, release and stewardship, none of the
- * permanence. §23 priority 7 is the test that this holds under every endpoint.
+ * CREDENTIAL SCOPES (§15.2). One scope per kind of act, named for the act, so
+ * a token is legible without a glossary: `register` (claim a name; also
+ * rehearse a publication), `steward` (Owner/Website), `release` (a
+ * never-published name), `publish`, `deprecate`, and `operator` for the §9.2
+ * plane. An agent normally holds register · steward · release — everything
+ * preparatory and nothing permanent — and a person adds publish and
+ * deprecate. (Until 12 Sept 2026 the first three were one scope, `draft:write`,
+ * a name from before the Registry stopped holding drafts; the split was the
+ * outside review's suggestion and Anto's ruling.) §23 priority 7 is the test
+ * that containment holds under every endpoint.
  */
 
 import { timingSafeEqual } from 'node:crypto';
@@ -40,10 +44,29 @@ import { splitReference } from '../part-three/routes.ts';
 
 // 'disclose' existed while the Registry held unpublished content; the 8 Sept
 // revision moved that content (and its disclosure) out of the Registry
-// entirely (spec §7.3), so the scope went with it. 'operator' guards the §9.2
-// operator plane, of which exactly one act exists so far: allocating a Top
-// Level Prefix. No authoring credential should carry it by default.
-export type Scope = 'draft:write' | 'publish' | 'deprecate' | 'operator';
+// entirely (spec §7.3), so the scope went with it. 'draft:write' was split
+// into register · steward · release on 12 Sept 2026 (see SCOPES below).
+// 'operator' guards the §9.2 operator plane. No authoring credential should
+// carry it by default.
+export type Scope = 'register' | 'steward' | 'release' | 'publish' | 'deprecate' | 'operator';
+export const SCOPES: readonly Scope[] = ['register', 'steward', 'release', 'publish', 'deprecate', 'operator'];
+
+/**
+ * Parse a comma-separated scope list as it arrives from an environment
+ * variable or a CLI flag. Unknown strings are dropped, not fatal — a leftover
+ * 'disclose' must not stop a server — except that the retired bundle
+ * 'draft:write' is EXPANDED to the three scopes it used to mean, so a
+ * credential configured before the split keeps working unchanged.
+ */
+export function parseScopes(text: string): Scope[] {
+  const out = new Set<Scope>();
+  for (const raw of text.split(',')) {
+    const s = raw.trim();
+    if (s === 'draft:write') { out.add('register'); out.add('steward'); out.add('release'); continue; }
+    if ((SCOPES as readonly string[]).includes(s)) out.add(s as Scope);
+  }
+  return [...out];
+}
 
 export type Credential = {
   /** The bearer token value. */
@@ -54,13 +77,29 @@ export type Credential = {
   /** Required for service/agent: the human behind it (§4.3, §15.1). */
   principal?: string;
   scopes: Scope[];
+  /** Set for credentials that live in the `credential` table (§15.2). */
+  id?: string;
+  label?: string;
+};
+
+/** How the routes look a presented token up when it is not in the static list. */
+export type CredentialLookup = {
+  findByToken(token: string): Promise<Credential | null>;
+  /** Best-effort last-used mark; must never throw into a request. */
+  touch(id: string): Promise<void>;
 };
 
 export type AuthoringDeps = {
   pool: pg.Pool;
   ownership: OwnershipStore;
-  /** Phase 0: a static credential table. OIDC and issuance are Phase 2. */
+  /**
+   * Static credentials from the environment — the Phase 0 bootstrap form,
+   * kept so a fresh deployment can mint its first row. Empty once the table
+   * carries the real ones.
+   */
   credentials: Credential[];
+  /** The `credential` table (migration 10). Optional so tests can run without it. */
+  credentialStore?: CredentialLookup;
 };
 
 type Authed = { credential: Credential };
@@ -89,13 +128,23 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
     }
   }
 
-  function authenticate(request: FastifyRequest): Credential | null {
+  async function authenticate(request: FastifyRequest): Promise<Credential | null> {
     const header = request.headers.authorization;
     if (!header?.startsWith('Bearer ')) return null;
-    const presented = Buffer.from(header.slice(7));
+    const token = header.slice(7);
+    const presented = Buffer.from(token);
     for (const credential of credentials) {
       const expected = Buffer.from(credential.token);
       if (presented.length === expected.length && timingSafeEqual(presented, expected)) return credential;
+    }
+    // The table: looked up by hash, so a wrong token costs one indexed read
+    // and a revoked one is simply absent (§15.2).
+    if (deps.credentialStore && token.length >= 32) {
+      const found = await deps.credentialStore.findByToken(token);
+      if (found) {
+        if (found.id) void deps.credentialStore.touch(found.id);
+        return found;
+      }
     }
     return null;
   }
@@ -103,20 +152,20 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   /**
    * The scope check — §15.2, §23 priority 7.
    *
-   * One function on one choke point, so "a draft:write credential cannot
-   * publish or deprecate under any endpoint or parameter combination" is a
-   * property of the structure rather than of each handler's diligence.
+   * One function on one choke point, so "a credential without publish cannot
+   * publish under any endpoint or parameter combination" is a property of the
+   * structure rather than of each handler's diligence.
    *
    * A REHEARSAL is the one deliberate exception (12 Sept 2026, Anto's ruling):
-   * `POST …/publish?dry_run=true` needs draft:write, not publish. The gate
+   * `POST …/publish?dry_run=true` needs register, not publish. The gate
    * findings it returns — Header completeness, additivity — are not what the
-   * publish scope guards; the irreversible act is. An agent holding
-   * draft:write alone must be able to converge on a publishable document
-   * (§15.1) and hand it to the person who holds publish. Only the literal
-   * string "true" is a rehearsal; anything else is the real act.
+   * publish scope guards; the irreversible act is. An agent holding the
+   * preparatory scopes alone must be able to converge on a publishable
+   * document (§15.1) and hand it to the person who holds publish. Only the
+   * literal string "true" is a rehearsal; anything else is the real act.
    */
-  function requireScope(request: FastifyRequest, reply: FastifyReply, scope: Scope): Authed | null {
-    const credential = authenticate(request);
+  async function requireScope(request: FastifyRequest, reply: FastifyReply, scope: Scope): Promise<Authed | null> {
+    const credential = await authenticate(request);
     if (!credential) {
       structuredError(reply, 401, 'auth.missing', 'auth', 'A bearer token is required (§15.1).');
       return null;
@@ -218,7 +267,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   // version is created by publication and never written directly.
 
   app.put<{ Params: { ref: string }; Body: unknown }>('/:ref', async (request, reply) => {
-    const authed = requireScope(request, reply, 'draft:write');
+    const authed = await requireScope(request, reply, 'register');
     if (!authed) return;
 
     const { name, version } = splitReference(request.params.ref);
@@ -286,7 +335,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       member_user_id?: string;
     } | null;
   }>('/operator/allocations', async (request, reply) => {
-    const authed = requireScope(request, reply, 'operator');
+    const authed = await requireScope(request, reply, 'operator');
     if (!authed) return;
 
     const body = request.body;
@@ -362,7 +411,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   // --- DELETE /<name> — discard (§13.5). Only while never published. --------
 
   app.delete<{ Params: { ref: string } }>('/:ref', async (request, reply) => {
-    const authed = requireScope(request, reply, 'draft:write');
+    const authed = await requireScope(request, reply, 'release');
     if (!authed) return;
 
     const { name, version } = splitReference(request.params.ref);
@@ -422,8 +471,8 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   app.post<{ Params: { ref: string }; Querystring: { dry_run?: string }; Body: unknown }>(
     '/:ref/publish',
     async (request, reply) => {
-      // A rehearsal changes nothing and needs only draft:write; the act
-      // itself needs publish (see requireScope).
+      // A rehearsal changes nothing and needs only register; the act itself
+      // needs publish (see requireScope).
       const dryRunParam = request.query.dry_run;
       if (dryRunParam !== undefined && dryRunParam !== 'true' && dryRunParam !== 'false') {
         // "TRUE", "1", "yes" must not silently become the irreversible act.
@@ -432,7 +481,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
           { dry_run: dryRunParam });
       }
       const rehearsal = dryRunParam === 'true';
-      const authed = requireScope(request, reply, rehearsal ? 'draft:write' : 'publish');
+      const authed = await requireScope(request, reply, rehearsal ? 'register' : 'publish');
       if (!authed) return;
 
       const { name, version } = splitReference(request.params.ref);
@@ -549,7 +598,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   // --- POST /<name>:<n>/deprecate (§13.5). Reversible in practice (§15.2). --
 
   app.post<{ Params: { ref: string } }>('/:ref/deprecate', async (request, reply) => {
-    const authed = requireScope(request, reply, 'deprecate');
+    const authed = await requireScope(request, reply, 'deprecate');
     if (!authed) return;
 
     const { name, version } = splitReference(request.params.ref);
@@ -586,7 +635,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   app.patch<{ Params: { ref: string }; Body: { Owner?: string; Website?: string } & Record<string, unknown> }>(
     '/:ref/header',
     async (request, reply) => {
-      const authed = requireScope(request, reply, 'draft:write');
+      const authed = await requireScope(request, reply, 'steward');
       if (!authed) return;
 
       const { name, version } = splitReference(request.params.ref);

@@ -34,3 +34,5 @@ local servers (`Start_registry.command`; if it refuses quietly, stale processes 
 
 Migration history that needed step 3: migration 7 (`1730000007000_distribution`, 11 Sept —
 learned the hard way), migration 8 (`1730000008000_released-names-are-free`, 11 Sept).
+Migration 10 (`1730000010000_credentials`, 12 Sept) likewise — and after it, mint the real
+tokens per `deploy/CREDENTIALS.md` before removing `CP_AUTHOR_*` from the Deployment.
