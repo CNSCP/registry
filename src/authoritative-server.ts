@@ -29,6 +29,7 @@ import { PgOwnershipStore } from './part-one/pg-store.ts';
 import { registerAuthoringRoutes, parseScopes, type Credential } from './part-two/routes.ts';
 import { findByToken, touch } from './credentials/store.ts';
 import { registerResolutionRoutes } from './part-three/routes.ts';
+import { identityConfigFromEnv, registerIdentityRoutes } from './identity/routes.ts';
 
 // Credentials come from two places (§15.2). The TABLE is the real one:
 // minted with `npm run operator -- credential mint`, looked up by hash,
@@ -50,7 +51,9 @@ if (token && userId) {
   throw new Error('CP_AUTHOR_TOKEN and CP_AUTHOR_USER_ID go together; set both or neither.');
 }
 
-const app = Fastify({ logger: true });
+// trustProxy: the ingress terminates TLS, and the Secure session cookie
+// (§15.3) needs the original scheme from X-Forwarded-Proto.
+const app = Fastify({ logger: true, trustProxy: true });
 const pool = getPool();
 
 await registerAuthoringRoutes(app, {
@@ -62,6 +65,10 @@ await registerAuthoringRoutes(app, {
     touch: (id) => touch(pool, id),
   },
 });
+// Sign-in and /account (§15.3) mount only when the six CP_OAUTH_* /
+// CP_SESSION_SECRET / CP_PUBLIC_ORIGIN variables are all present.
+const identity = identityConfigFromEnv();
+if (identity) await registerIdentityRoutes(app, { pool, config: identity });
 await registerResolutionRoutes(app, { db: pool, html: process.env['RENDER_HTML'] !== 'false' });
 
 app.log.info(
@@ -69,6 +76,7 @@ app.log.info(
     ? 'authoring: one environment credential plus the credential table'
     : 'authoring: credential table only (no CP_AUTHOR_* in the environment)',
 );
+app.log.info(identity ? `identity: sign-in with ${identity.providers.map((p) => p.name).join(' and ')} at ${identity.publicOrigin}` : 'identity: no sign-in (CP_OAUTH_* not set)');
 
 const port = Number(process.env['CP_PORT'] ?? 8082);
 const host = process.env['BIND_HOST'] ?? '127.0.0.1';

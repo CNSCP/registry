@@ -70,8 +70,10 @@ export type MintRequest = {
   principal?: string;
   scopes: Scope[];
   label: string;
-  /** The operator principal doing the minting, for the audit event. */
+  /** The principal doing the minting, for the audit event: an operator from the CLI, or the user themselves on /account (§15.3). */
   by: string;
+  /** How `by` acted. Defaults to 'operator' (the CLI); /account passes 'human'. */
+  byKind?: 'operator' | 'human';
 };
 
 /**
@@ -98,7 +100,7 @@ export async function mint(db: Queryable, request: MintRequest): Promise<{ token
 
   await record(db, {
     actor: request.by,
-    actor_kind: 'operator',
+    actor_kind: request.byKind ?? 'operator',
     principal: request.by,
     action: 'credential.mint',
     subject_type: 'credential',
@@ -111,7 +113,7 @@ export async function mint(db: Queryable, request: MintRequest): Promise<{ token
 }
 
 /** Revoke a token. Idempotent; an already-revoked row is left as it was. */
-export async function revoke(db: Queryable, id: string, by: string, reason: string): Promise<boolean> {
+export async function revoke(db: Queryable, id: string, by: string, reason: string, byKind: 'operator' | 'human' = 'operator'): Promise<boolean> {
   const { rows } = await db.query<{ label: string }>(
     `UPDATE credential SET revoked_at = now(), revoked_by = $2
       WHERE id = $1 AND revoked_at IS NULL RETURNING label`,
@@ -120,7 +122,7 @@ export async function revoke(db: Queryable, id: string, by: string, reason: stri
   if (!rows[0]) return false;
   await record(db, {
     actor: by,
-    actor_kind: 'operator',
+    actor_kind: byKind,
     principal: by,
     action: 'credential.revoke',
     subject_type: 'credential',

@@ -464,7 +464,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
 // which happens when a view decides some fields are uninteresting — so this one
 // decides nothing, and prints every attribute of every Property.
 
-function escape(value: unknown): string {
+export function escape(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -552,7 +552,18 @@ const SITE_STYLE = `
   .site-footer a{color:#aab6c6}.site-footer a:hover{color:#fff}
   @media (max-width:640px){body{font-size:16px}.hero{padding:44px 0 40px}.hero h1{font-size:2rem}}`;
 
-function chrome(title: string, active: 'registry' | 'catalog' | null, body: string): string {
+/**
+ * The Account link appears only on a host that mounts the identity routes
+ * (§15.3) — the authoritative host. A local instance has no sign-in.
+ */
+let accountNav = false;
+export function enableAccountNav(): void {
+  accountNav = true;
+}
+
+export type NavId = 'registry' | 'catalog' | 'account';
+
+function chrome(title: string, active: NavId | null, body: string): string {
   const nav = (id: string, href: string, label: string) =>
     `<li><a${active === id ? ' class="active"' : ''} href="${href}">${label}</a></li>`;
   return `<!doctype html>
@@ -568,6 +579,7 @@ function chrome(title: string, active: 'registry' | 'catalog' | null, body: stri
     ${nav('catalog', '/profiles', 'Catalog')}
     <li><a href="https://github.com/CNSCP/specification/blob/main/cns-cp.md">Specification</a></li>
     <li><a href="https://cnscp.io/about.html">About CNS/CP</a></li>
+    ${accountNav ? nav('account', '/account', 'Account') : ''}
   </ul></nav>
 </div></header>
 ${body}
@@ -581,7 +593,7 @@ ${body}
 }
 
 /** An interior page: the chrome around one content section. */
-function page(title: string, body: string, active: 'registry' | 'catalog' | null = null): string {
+export function page(title: string, body: string, active: NavId | null = null): string {
   return chrome(title, active, `<main><section class="section"><div class="wrap">${body}</div></section></main>`);
 }
 
