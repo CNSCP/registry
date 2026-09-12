@@ -104,6 +104,40 @@ beforeEach(() => {
   });
 });
 
+// --- Continuing authority is re-derived on every act (review of 12 Sept 2026) --
+
+describe('authority is not remembered — it is re-derived from the ownership tables on every act', () => {
+  test('a member removed from the holding organization is refused on the next act', async () => {
+    const before = await authorizes(store, human(USER.ashraeAdmin), 'ashrae.62', { intent: 'publish' });
+    assert.equal(before.allowed, true);
+    const idx = store.memberships.findIndex((m) => m.user_id === USER.ashraeAdmin && m.org_id === ORG.ashrae);
+    store.memberships.splice(idx, 1);
+    const after = await authorizes(store, human(USER.ashraeAdmin), 'ashrae.62', { intent: 'publish' });
+    assert.equal(after.allowed, false);
+    assert.equal(after.reason, 'no-covering-scope');
+  });
+
+  test('a Prefix transfer moves authority with it: the former holder\'s members are refused, the new holder\'s admitted', async () => {
+    const transferred = { ...store.allocations.get('ashrae')!, org_id: ORG.outsider };
+    store.allocations.set('ashrae', transferred);
+    const former = await authorizes(store, human(USER.ashraeAdmin), 'ashrae.62', { intent: 'publish' });
+    assert.equal(former.allowed, false, 'the former holder keeps nothing by having once held it');
+    const current = await authorizes(store, human(USER.outsider), 'ashrae.62', { intent: 'publish' });
+    assert.equal(current.allowed, true);
+    assert.equal(current.reason, 'holder-member');
+  });
+
+  test('a grant does not survive the transfer of the allocation it was made on, unless the new holder keeps it', async () => {
+    // The record lives on the allocation, so it moves with the Prefix; the
+    // new holder revokes it or keeps it. What the seam does: honours it while
+    // it is active. That is a policy the transfer workflow must decide (§8.4).
+    const transferred = { ...store.allocations.get('ashrae')!, org_id: ORG.outsider };
+    store.allocations.set('ashrae', transferred);
+    const committee = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.x', { intent: 'publish' });
+    assert.equal(committee.allowed, true, 'still honoured until revoked — the transfer workflow must decide');
+  });
+});
+
 // --- Positives --------------------------------------------------------------
 
 describe('the ownership chain — allowed', () => {
