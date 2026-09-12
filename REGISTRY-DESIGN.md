@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.7 · 11 September 2026
+**Status:** Draft v0.8 · 12 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, clean reading copy §1–§10, assembled **8 September 2026** from the canon working drafts at that date — §1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, because the 2026 revision is still in draft and not yet public.** This design is written against one identifiable artifact:
@@ -23,6 +23,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.8 answers an outside review of the authorization design (12 September).** Two conformance points, both accepted: the outage fallback to a name's recorded registrant is removed — every write waits when the seam cannot answer (§4.1 rule 2) — and organization status leaves the seam, whose every refusal now maps to a naming requirement, an allocation fact, or the absence of the owner's authorization (§9.3 table); suspension is carried out as allocation locks and grant suspensions (§7.1). Grants name their grantor (`granted_by_org_id`, §6.4, migration 9) and count only from the current holder, which settles Q7(b) and makes transfer revoke grants by default (§8.3, §8.4). The intended assistant-and-person credential split is recorded in §15.2, and a rehearsal needs only `draft:write` (§15.1).
 >
 > **v0.7 brings the whole document into the 8 September vocabulary, and records Phase 1's first delivery.** Every section that still described the withdrawn Draft-in-Registry design — §2's vocabulary and invariants, §3.1's grammar, §10.4, §11–§16, §18–§20, §22, §23 — now says what the specification says and what the code does: the Registry holds the entry alone for an unpublished name, publication carries its content, `:unpublished` is never resolved, one irreversible act, scopes `draft:write · publish · deprecate · operator`. §12.1 lists the columns that exist. §20.1 is new: the distribution feed and local instances as built and verified live against `cp.cnscp.io` (11 Sept). §24 is left in its own historical vocabulary and marked so; §24.5 remains the accounting for the revision itself. §25 gains Q12 (the signed anchor).
 >
@@ -191,14 +193,14 @@ Part Two asks Part One exactly one question:
 
 > *Does an authorization exist for this actor to register or publish this name, under an active allocation?*
 
-That is spec §7.3's requirement made a question: "what the Registry requires is that the authorization exists," while the specification deliberately declines to define its form. §7.3 requires it for every act on a name — registration, publication, Deprecation, a stewardship change, release — and the seam answers the same question for all of them (§11); registration and publication are the two that block on it, the rest have a local fallback (§4.1 rule 2). The seam therefore sits exactly where the specification already put a boundary.
+That is spec §7.3's requirement made a question: "what the Registry requires is that the authorization exists," while the specification deliberately declines to define its form. §7.3 requires it for every act on a name — registration, publication, Deprecation, a stewardship change, release — and the seam answers the same question for all of them (§11); every one of them waits on it when it cannot answer (§4.1 rule 2). The seam therefore sits exactly where the specification already put a boundary.
 
 Everything else flows the other way, as events: a transfer completes in Part One, and Part Two reacts by updating the `Owner` stewardship field on affected versions and dropping authorization scopes to `offered`. **One query in, events out.** Part Two never writes into Part One, and neither reaches into the other's tables.
 
 Two rules keep the seam honest:
 
 1. **Governance state must never reach the read path.** A suspended organization, a locked allocation, a dispute in flight — none of it may affect resolution of published versions, which spec §9.3 answers to any party regardless. This is easy to violate accidentally with a naive join across the seam.
-2. **The authorization query is the only synchronous coupling.** Part Two must remain able to serve reads and edits when Part One is unavailable; only registration and publication block.
+2. **The authorization query is the only synchronous coupling.** Part Two must remain able to serve *reads* when Part One is unavailable; **every write waits**, with a structured 503 that says so. *(Amended 12 September 2026, on an outside review: until then, deprecation, stewardship and release fell back to the name's recorded registrant during an outage. Spec §7.3 requires the owner's authorization for every act on a name, and a registration is a historical fact, not continuing authority — a member since removed, or a former holder's registrant after a transfer, would have kept acting for as long as the seam was down. Nothing is inferred now.)*
 
 ### 4.2 The seam between Two and Three
 
@@ -299,6 +301,7 @@ The Registry must check that an owner's authorization exists (spec §7.3), but t
 | `scope` | text | A name or sub-name scope, e.g. `ashrae.135`: covers that exact name and any name beginning `ashrae.135.` — **string prefix, not a tree**; no interior name need exist |
 | `grantee_org_id` | uuid → organization | |
 | `status` | enum | `offered · active · revoked · expired` |
+| `granted_by_org_id` | uuid → organization | The organization that made the grant. **A grant counts only while its grantor holds the allocation** (migration 9, 12 Sept 2026): a transfer makes every prior grant ineffective until the new holder re-grants or accepts by re-issuing (§8.4), and a grantee cannot grant onward, because a record it issues names itself, not the holder (§8.3) |
 | `granted_by / granted_at / expires_at` | | Revocable at will; revocation never affects already-published versions |
 
 ## 7. Lifecycles
@@ -311,7 +314,7 @@ applied ──verify──► verified ──first allocation──► active
    └─rejected                     └─dissolve──► dissolved
 ```
 
-- `suspended` freezes management writes for the organization. It **never** affects resolution of published versions: those are immutable, permanent, and answerable to any party regardless of what has become of their author (spec §9.3). Governance churn must be invisible to resolvers (§4.1 rule 1).
+- `suspended` is a steward's act with no stated ground in the specification, so **the seam never reads it** (amended 12 Sept 2026): what a suspension *means* is carried out as facts the seam does read — the steward locks the organization's allocations (no new registration beneath them, §7.2, exactly as a dispute hold) and suspends the grants it made. Publication on names the organization already holds is not stopped by it, because spec §9.3 admits no such ground. It **never** affects resolution of published versions: those are immutable, permanent, and answerable to any party regardless of what has become of their author (spec §9.3). Governance churn must be invisible to resolvers (§4.1 rule 1).
 - `dissolved` sends every allocation the organization holds into redemption.
 
 ### 7.2 Allocation
@@ -353,13 +356,13 @@ Spec §7.3 requires only that the owner's authorization exist; how an owner gove
 - Optional: the owner grants a scope to another organization — `ashrae.135` covers that name and anything beginning `ashrae.135.`. Grantee members then register and publish within the scope. **Scope is a string prefix, not a tree**: nothing requires `ashrae.135` itself to be registered, and no interior name need exist.
 - Revocation takes effect for future acts only. Published versions are immutable and unaffected — governance never rewrites history.
 - Scopes may not overlap, and are not re-delegable at v1. *Watch item:* the standards-body pattern (`ashrae` → committee → working group) may need chains sooner than expected (§25 Q6).
-- On transfer, scopes drop to `offered` for re-affirmation by the new holder.
+- On transfer, every grant lapses by default: the seam honours a grant only while `granted_by_org_id` is the allocation's current holder (§6.4), so a former holder's grants stop counting the moment the Prefix changes hands, without a workflow having to find and revoke them. The new holder re-grants, or accepts by re-issuing the record in its own name.
 
 ### 8.4 Transfers
 
 - **Voluntary:** initiated by the holder's admin, accepted by the receiving organization's admin, executed after a 7-day cooling window; cancellable, audited.
 - **Forced:** dispute outcome, legal order, or recovery from a dissolved organization. Two-steward sign-off, permanent record.
-- Published versions travel with the Prefix byte-identical. A transfer changes who may register and publish next; it changes nothing already published. The new holder may update the stewardship Header fields — `Owner` exists as a mutable field precisely because "a Prefix may change hands" (spec §6.6).
+- Published versions travel with the Prefix byte-identical. A transfer changes who may register and publish next; it changes nothing already published. Outstanding grants lapse (§8.3) unless the new holder re-issues them. The new holder may update the stewardship Header fields — `Owner` exists as a mutable field precisely because "a Prefix may change hands" (spec §6.6).
 
 ### 8.5 Disputes
 
@@ -404,6 +407,22 @@ GET      /operator/audit                                    full chain, export
 There is deliberately no endpoint anywhere in the operator plane to alter, unpublish, or withhold a published version. Spec §9.3 forbids all three, so the capability should not exist in the codebase — its absence is the enforcement.
 
 ### 9.3 The internal interface Part Two calls
+
+**Every refusal the seam can give maps to a naming requirement, an allocation fact, or the absence of the owner's authorization** — the grounds spec §9.3 admits — and to nothing else (audited against the code on 12 September 2026):
+
+| Refusal | Basis | Register | Existing-name acts |
+|---|---|---|---|
+| `name-malformed`, `name-single-segment` | spec §7.2 | refused | refused |
+| `prefix-spec-reserved` (`example`, `test`) | spec §7.1: never allocated | refused | refused |
+| `allocation-not-found` | no allocation, so no owner, so no authorization can exist | refused | refused |
+| `allocation-not-active` (`locked`, `redemption`, …) | the allocation's standing; `locked` is §7.2's dispute hold, which suspends transfer and new registration only | refused | **admitted** — the holder still holds |
+| `allocation-closed-to-registration` | the holder declining new names beneath its own Prefix (set only by the operator on Prefixes the operator holds: §10.2 rulings 2–3) | refused | admitted |
+| `allocation-released` (`released`, `requested`, `reserved`) | no holder | refused | refused — and what is published keeps resolving |
+| `no-membership` / `no-covering-scope` | the owner's authorization does not exist for this user | refused | refused |
+| `scope-not-active`, `scope-expired`, `scope-not-from-current-holder` | the grant the user relies on is not the current holder's live authorization | refused | refused |
+
+Organization status is not on this list, by design: it is not a ground the specification states, so a steward who suspends an organization expresses it as allocation locks and grant suspensions (§7.1), which are.
+
 
 ```
 authorizes(actor, name) → { allowed, allocation_id, reason }
@@ -521,7 +540,7 @@ One row per registered name — **the entry, and nothing else.** Spec §7.3: "Of
 | `name` | text, unique among live rows | The registered name, ≥ 2 segments; never changes. Uniqueness is a partial index over `discarded_at IS NULL` (migration 8), so a released name is free to register again (spec §7.3) while the released row stays as history |
 | `allocation_id` | uuid | Owner chain root, as returned by `authorizes()` at registration |
 | `registered_at` | timestamptz | Public fact (spec §7.3); confers nothing |
-| `registered_by` | uuid → app_user | The registrant the seam confirmed; the local fallback for edit-class acts during a Part One outage (§4.1 rule 2) |
+| `registered_by` | uuid → app_user | The registrant the seam confirmed at registration — a recorded fact, conferring nothing (the outage fallback that once read it was removed on 12 Sept 2026, §4.1 rule 2) |
 | `imported_from` | text null | §10.4: the name this record was served under on `cp.padi.io`, where it differs |
 | `discarded_at` | timestamptz null | Set only if never published; releases the name |
 
@@ -901,7 +920,7 @@ Deployment: one codebase, four entrypoints as built — `allocation` (`tlp.`, th
 3. **Immutability at the database layer** — UPDATE and DELETE of a published version must fail even on a superuser path; only `status` forward and the two stewardship fields may move.
 4. **Authorization table tests** — the full chain, including the negatives: publishing without authorization, registering a one-segment name, registering under a reserved Prefix.
 5. **Nothing unpublished is ever held** — a refused publication retains nothing; `:unpublished` is never resolved for any party, credential or not; the schema has nowhere to put unpublished content.
-6. **Seam isolation** — Part Two serves reads and edits with Part One unavailable; governance state never appears in a resolution response.
+6. **Seam isolation** — Part Two serves reads with Part One unavailable and every write waits with a structured 503; governance state never appears in a resolution response.
 7. **Scope containment** — a `draft:write` credential cannot publish or deprecate, nor perform an operator act, under any endpoint or parameter combination; and `dry_run=true` provably writes nothing.
 8. **Distribution** — the TypeScript chain function agrees with the database trigger on every real event; an instance answers byte-identically after bootstrap and after one of every public act; a tampered, gapped, or document-swapped page never moves the cursor.
 
@@ -965,7 +984,7 @@ Section renumbering in the spec: Header §6.4→§6.6, worked example §6.6→§
 4. **Who reviews the reviewers.** Steward appointment and the two-steward rule are asserted, not designed. A charter is needed before Phase 3 — and it matters more than it looks, since the specification makes the Registry a single institution whose continued good behavior spec §7.4 explicitly declines to rely on.
 5. **The registrar role stays vacant.** No party registers Prefixes on behalf of others. The part split and organization model leave room to accredit one later without redesign.
 6. **Delegation chains.** Standards bodies subdivide more than twice (`ashrae` → committee → working group). v1 forbids re-delegation; the pattern may force it early.
-7. **Two rules in §5 and §8.3 have no mechanism — surfaced while building the spine.** (a) §5 says membership "is itself authorization to act under the Prefix in Part Two, **unless the owner has narrowed it with scopes**," but §6.4's `authorization_record` grants scope to *another organization* and has no form that narrows a member of the holder. As written, membership is unconditional and the narrowing clause is unimplementable. Either §6.4 gains an intra-organization form, or §5 drops the clause. (b) §8.3 says scopes "are not re-delegable at v1," but nothing records *which organization granted* a record, so a grantee granting onward cannot be distinguished from the holder doing so. Enforcing it needs a `granted_by_org` column. Both are small; both are load-bearing the moment a standards body arrives, which is also what Q6 is about.
+7. **Two rules in §5 and §8.3 have no mechanism — surfaced while building the spine.** (a) §5 says membership "is itself authorization to act under the Prefix in Part Two, **unless the owner has narrowed it with scopes**," but §6.4's `authorization_record` grants scope to *another organization* and has no form that narrows a member of the holder. As written, membership is unconditional and the narrowing clause is unimplementable. Either §6.4 gains an intra-organization form, or §5 drops the clause. (b) ~~§8.3 says scopes "are not re-delegable at v1," but nothing records *which organization granted* a record~~ **Settled 12 Sept 2026:** `granted_by_org_id` (migration 9); the seam honours a grant only from the allocation's current holder, which enforces no-re-delegation and revoke-on-transfer with one comparison. (a) remains open. Both are load-bearing the moment a standards body arrives, which is also what Q6 is about.
 8. **Allocation term expiry is recorded and unenforced.** `allocation.expires_at` exists (§6.3) and nothing reads it: the redemption transition of §7.2 is what moves `status`, and that is Phase 2 work. Until then an allocation whose term lapsed years ago still authorizes writes. Harmless while the operator holds nearly everything; a real gap the moment §8.2 renewal is announced to holders.
 9. **§8.1 has one verification method, and it excludes real claimants.** Domain control via DNS TXT or `/.well-known/` proves control of a *web identity*, which two of the seven grandfathered claimants (`ibb`, `skycentrics`) simply do not have — their recorded websites are Google Docs. A second method is needed before Phase 2, and the obvious candidate is an operator attestation: a steward records direct contact with the claimant as evidence, with rationale, in place of an automated challenge. That trades a machine-checkable proof for a human one, so it needs the two-steward discipline of §5 and a published record — which is also why it interacts with Q4, who reviews the reviewers.
 10. **The 2026 revision is in draft, and the public repository still carries the 2022 one.** *Partly addressed: the anchor is now pinned by hash in this document's header, and `registry/scripts/verify-spec.mjs` checks it, so drift in the working copy is detected rather than silent. What remains is a transition, not an oversight — the 2026 revision is a live draft and publishing it is a decision about the standards process, not a chore.* Two things stay true meanwhile. **First, §22's conformance checklist cannot be checked by anyone outside the editors.** Its rows cite sections that resolve to nothing in the only public document, so "a conforming Registry" is currently a claim its authors alone can verify — while spec §9.6 is titled "How conformance is observed" and §7.4 requires third parties be able to run a local instance. Those implementers are third parties by design. **Second, the public draft actively misleads rather than merely lagging**: someone building from it emits `"Status": "Active"`, puts `"Source": "provider"` on each Property, and has no Propagate attribute — an incompatible contract. This is not hypothetical; `spec2026.ts` refuses `"Status": "Active"` precisely so a 2022-shaped document cannot be imported as though it carried 2026 lifecycle state, and there is a test for it. A one-line note on the public readme saying `main` is superseded and a revision is in progress would cost nothing and prevent that. For the record, `github.com/CNSCP/specification` on `main` carries the December 2022 draft — different section numbering (§2.3 Header, §2.4 Properties), different Status values (`Testing`/`Active`/`Deprecated`), Properties as repeated `"Property"` keys with `"Source": provider|consumer`, and **no Propagate attribute at all**. This document is written against the 2026 revision (§1–§10, assembled 8 September 2026), which exists only as a working copy. Until the normative anchor is public, no independent party can check this design against the specification it claims to conform to — and the conformance checklist in §22 cites sections a reader cannot look up. Publishing the revision, or at least pinning the exact copy this design was written against, is a prerequisite for the §22 checklist to mean anything to anyone but its authors. *(Noted while building: the 2022 draft's worked example in its §2.4.1 is `cp:xyz.ics:2`, with the same Owner and `www.example.com` website as the live `xyz.ics` record, and its §3.3–§3.4 examples use `test.abc` — so both Prefixes withheld under §10.2 are the specification's own sample data, which is a stronger reason for those rulings than the ones recorded there.)*

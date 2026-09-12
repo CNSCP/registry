@@ -159,7 +159,7 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       });
     } catch (error) {
       structuredError(reply, 503, 'seam.unavailable', 'authorization',
-        `The allocation service is unavailable, and ${intent === 'register' ? 'registration' : 'publication'} requires its answer (spec §7.3, §4.1). Retry later; Draft edits and reads continue to work.`,
+        `The allocation service is unavailable, and every act on a name requires its answer (spec §7.3, §4.1). Retry later; resolution continues to work.`,
         { name, cause: (error as Error).message });
       return null;
     }
@@ -173,43 +173,28 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   }
 
   /**
-   * The edit path: Draft writes, deprecation, stewardship, disclosure, discard.
+   * The edit path: deprecation, stewardship, release.
    *
-   * §4.1 rule 2: "Part Two must remain able to serve reads and edits when Part
-   * One is unavailable; only registration and publication block." So the seam
-   * is consulted as always while it answers — an outage widens nothing in
-   * normal operation — and on failure the check degrades to something local:
-   * the recorded registrant of the name may continue working on it. Anyone
-   * else waits with the seam, and the degraded grant is written to the audit
-   * chain by the act it permits.
+   * Spec §7.3 (8 Sept revision) requires the owner's authorization for EVERY
+   * act on a name — "registration, publication, Deprecation, a change to a
+   * stewardship field, or release" — and only the seam can answer. So these
+   * acts wait exactly as registration and publication do when the seam cannot
+   * answer: a structured 503, nothing written. Reads are unaffected (§4.1).
+   *
+   * Until 12 Sept 2026 this path fell back to the name's recorded registrant
+   * during a Part One outage. An outside review pointed out what that grants:
+   * a member since removed, or a former holder's registrant after a transfer,
+   * could act for as long as the seam was down — authority inferred from a
+   * historical fact rather than established. Removed on Anto's ruling; the
+   * intent is still "publish", because allocation state gates registration
+   * only (§14).
    */
   async function authorizeEdit(
     reply: FastifyReply,
     credential: Credential,
     name: string,
-  ): Promise<{ degraded: boolean } | null> {
-    try {
-      const decision = await authorizes(ownership, { userId: credential.userId, kind: credential.kind }, name, {
-        intent: 'publish', // edit-class: allocation state does not gate (§14)
-      });
-      if (!decision.allowed) {
-        structuredError(reply, 403, `authorization.${decision.reason}`, 'authorization', decision.detail, { name });
-        return null;
-      }
-      return { degraded: false };
-    } catch {
-      const { rows } = await pool.query<{ registered_by: string | null }>(
-        `SELECT registered_by FROM profile WHERE name = $1 AND discarded_at IS NULL`,
-        [name],
-      );
-      if (rows[0] && rows[0].registered_by === credential.userId) {
-        return { degraded: true };
-      }
-      structuredError(reply, 503, 'seam.unavailable', 'authorization',
-        'The allocation service is unavailable. The registrant of a name may continue editing during the outage; other authorization requires the seam (§4.1 rule 2).',
-        { name });
-      return null;
-    }
+  ): Promise<{ allocationId: string } | null> {
+    return authorizeWrite(reply, credential, name, 'publish');
   }
 
   async function profileRow(name: string) {

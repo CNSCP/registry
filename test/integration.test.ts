@@ -272,8 +272,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
 
   test('a well-formed scope beneath the allocation is accepted', async () => {
     await db.query(
-      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-       VALUES ($1, 'holderbody.135', $2, 'active')`,
+      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+       VALUES ($1, 'holderbody.135', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
       [allocationId, grantee],
     );
     const { rows } = await db.query(`SELECT 1 FROM authorization_record WHERE scope = 'holderbody.135'`);
@@ -295,8 +295,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
     for (const bad of ['grammarco', 'grammarco.UPPER', 'grammarco..x', 'grammarco.-x', 'grammarco.x_y']) {
       const message = await refused(() =>
         db.query(
-          `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-           VALUES ($1, $2, $3, 'active')`,
+          `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+           VALUES ($1, $2, $3, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
           [grammarAllocation, bad, grantee],
         ),
       );
@@ -309,8 +309,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
     // somebody else's namespace.
     const message = await refused(() =>
       db.query(
-        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-         VALUES ($1, 'otherbody.135', $2, 'active')`,
+        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+         VALUES ($1, 'otherbody.135', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
         [allocationId, grantee],
       ),
     );
@@ -320,8 +320,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
   test('the holder needs no record beneath its own Prefix', async () => {
     const message = await refused(() =>
       db.query(
-        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-         VALUES ($1, 'holderbody.999', $2, 'active')`,
+        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+         VALUES ($1, 'holderbody.999', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
         [allocationId, holder],
       ),
     );
@@ -331,8 +331,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
   test('live scopes may not overlap, in either direction (§8.3)', async () => {
     const beneath = await refused(() =>
       db.query(
-        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-         VALUES ($1, 'holderbody.135.bacnet', $2, 'active')`,
+        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+         VALUES ($1, 'holderbody.135.bacnet', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
         [allocationId, other],
       ),
     );
@@ -340,14 +340,14 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
 
     // And the reverse: a broader scope over an existing narrower one.
     await db.query(
-      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-       VALUES ($1, 'holderbody.223.wg', $2, 'active')`,
+      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+       VALUES ($1, 'holderbody.223.wg', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
       [allocationId, other],
     );
     const above = await refused(() =>
       db.query(
-        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-         VALUES ($1, 'holderbody.223', $2, 'active')`,
+        `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+         VALUES ($1, 'holderbody.223', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
         [allocationId, grantee],
       ),
     );
@@ -356,8 +356,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
 
   test('the segment boundary holds in SQL too — 135 does not overlap 1350', async () => {
     await db.query(
-      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-       VALUES ($1, 'holderbody.1350', $2, 'active')`,
+      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+       VALUES ($1, 'holderbody.1350', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
       [allocationId, other],
     );
     const { rows } = await db.query(`SELECT 1 FROM authorization_record WHERE scope = 'holderbody.1350'`);
@@ -367,8 +367,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
   test('a revoked scope frees the name for a re-grant', async () => {
     await db.query(`UPDATE authorization_record SET status = 'revoked' WHERE scope = 'holderbody.135'`);
     await db.query(
-      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-       VALUES ($1, 'holderbody.135', $2, 'active')`,
+      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+       VALUES ($1, 'holderbody.135', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
       [allocationId, other],
     );
     const { rows } = await db.query(
@@ -381,8 +381,8 @@ describe('authorization_record integrity (§6.4, §8.3)', () => {
     // The scan is per-allocation, so `otherbody.135` is unaffected by anything
     // under `holderbody`.
     await db.query(
-      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status)
-       VALUES ($1, 'otherbody.135', $2, 'active')`,
+      `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id)
+       VALUES ($1, 'otherbody.135', $2, 'active', (SELECT org_id FROM allocation WHERE id = $1))`,
       [otherAllocationId, grantee],
     );
     const { rows } = await db.query(`SELECT 1 FROM authorization_record WHERE scope = 'otherbody.135'`);

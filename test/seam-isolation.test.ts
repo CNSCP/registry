@@ -1,11 +1,12 @@
 /**
  * §23 testing priority 6 — seam isolation.
  *
- *   "Part Two serves reads and edits with Part One unavailable; governance
- *    state never appears in a resolution response."
+ *   "Part Two serves reads with Part One unavailable; every write waits;
+ *    governance state never appears in a resolution response."
  *
- * §4.1 rule 2 is precise about which acts block: "only registration and
- * publication block." The outage is simulated by an OwnershipStore whose every
+ * §4.1 rule 2 (as amended 12 Sept 2026): every write requires the seam's
+ * answer, because spec §7.3 requires the owner's authorization for every act
+ * on a name. The outage is simulated by an OwnershipStore whose every
  * method throws — the seam is not merely answering "no", it is not answering.
  * The distinction matters: a "no" is a 403; an outage is a 503 that names
  * itself and says what still works.
@@ -140,23 +141,36 @@ describe('with Part One down: reads', () => {
   });
 });
 
-describe('with Part One down: edits keep working for the registrant', () => {
-  test('the registrant can deprecate during the outage', async () => {
+describe('with Part One down: every write waits — the registrant included (spec §7.3; 12 Sept 2026)', () => {
+  // Until 12 Sept the recorded registrant could deprecate and steward during an
+  // outage. Spec §7.3 requires the owner's authorization for every act on a
+  // name, and a registration is a historical fact, not continuing authority:
+  // a member since removed, or a former holder's registrant after a transfer,
+  // would have kept acting for as long as the seam was down. So nothing is
+  // inferred; every write waits, and says so.
+  test('the registrant cannot deprecate during the outage', async () => {
     const response = await outage.inject({
       method: 'POST', url: '/padi.isolated:1/deprecate', headers: auth(AUTHOR),
     });
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(response.json().code, 'seam.unavailable');
   });
 
-  test('the registrant can update stewardship during the outage', async () => {
+  test('the registrant cannot update stewardship during the outage', async () => {
     const response = await outage.inject({
       method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(AUTHOR),
       payload: { Website: 'https://moved.example' },
     });
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(response.json().code, 'seam.unavailable');
   });
 
-  test('but a NON-registrant is not quietly granted anything — 503, not 200 and not 403', async () => {
+  test('nor release a name', async () => {
+    const response = await outage.inject({ method: 'DELETE', url: '/padi.isolated', headers: auth(AUTHOR) });
+    assert.equal(response.statusCode, 503, response.body);
+  });
+
+  test('a NON-registrant gets the same answer — 503, not 200 and not 403', async () => {
     // A 403 would claim the seam answered "no". It did not answer at all, and
     // the response must say so rather than invent a denial.
     const response = await outage.inject({
@@ -166,14 +180,22 @@ describe('with Part One down: edits keep working for the registrant', () => {
     assert.equal(response.statusCode, 503);
     assert.equal(response.json().code, 'seam.unavailable');
   });
+
+  test('and the version is exactly as it was', async () => {
+    const { rows } = await db.query<{ status: string; header_website: string | null }>(
+      `SELECT v.status, v.header_website FROM profile_version v JOIN profile p ON p.id = v.profile_id WHERE p.name = 'padi.isolated'`,
+    );
+    assert.equal(rows[0]!.status, 'published');
+    assert.notEqual(rows[0]!.header_website, 'https://moved.example');
+  });
 });
 
-describe('with Part One down: only registration and publication block (§4.1 rule 2)', () => {
+describe('with Part One down: registration and publication block too (§4.1 rule 2)', () => {
   test('registration blocks with a structured 503 naming the seam', async () => {
     const response = await outage.inject({ method: 'PUT', url: '/padi.brand-new', headers: auth(AUTHOR) });
     assert.equal(response.statusCode, 503);
     assert.equal(response.json().code, 'seam.unavailable');
-    assert.match(response.json().message, /Draft edits and reads continue to work/);
+    assert.match(response.json().message, /resolution continues to work/);
   });
 
   test('publication blocks the same way — dry_run included', async () => {
@@ -193,8 +215,8 @@ describe('with Part One down: only registration and publication block (§4.1 rul
   });
 });
 
-describe('the healthy path is unchanged by the fallback existing', () => {
-  test('a stranger is refused by the SEAM (403), never by the local fallback', async () => {
+describe('the healthy path: the seam decides, registered_by decides nothing', () => {
+  test('a stranger is refused by the SEAM (403)', async () => {
     const response = await healthy.inject({
       method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(STRANGER),
       payload: { Website: 'https://stranger.example' },
@@ -203,10 +225,10 @@ describe('the healthy path is unchanged by the fallback existing', () => {
     assert.equal(response.json().gate, 'authorization');
   });
 
-  test('the registrant fallback grants nothing while the seam answers', async () => {
+  test('the recorded registrant is refused once their membership is gone', async () => {
     // The registrant column matches, but the seam's answer is what decides —
     // remove the author's membership and the healthy instance refuses despite
-    // registered_by matching.
+    // registered_by matching. Authority is re-derived on every act.
     await db.query(`DELETE FROM member WHERE user_id = $1`, [AUTHOR.userId]);
     const response = await healthy.inject({
       method: 'PATCH', url: '/padi.isolated:1/header', headers: auth(AUTHOR),

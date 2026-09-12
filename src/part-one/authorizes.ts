@@ -49,12 +49,12 @@ export type DenyReason =
   | 'allocation-not-found'
   | 'allocation-not-active'
   | 'allocation-closed-to-registration'
-  | 'holder-org-not-active'
+  | 'allocation-released'
   | 'no-membership'
   | 'no-covering-scope'
   | 'scope-not-active'
   | 'scope-expired'
-  | 'grantee-org-not-active';
+  | 'scope-not-from-current-holder';
 
 export type AllowReason = 'holder-member' | 'authorization-scope';
 
@@ -141,16 +141,37 @@ function allocationBlocksRegistration(allocation: Allocation): Decision | null {
 }
 
 /**
- * An organization in good enough standing to act.
+ * Allocation standing for an act on a name that ALREADY EXISTS beneath the
+ * Prefix — publication, Deprecation, stewardship, release (intent "publish").
  *
- * `suspended` freezes management writes (§7.1); `dissolved` sends its
- * allocations into redemption; `applied` has not been verified at all. Both
- * `active` and `verified` may act — §7.1 makes `verified` the state between
- * verification and a first allocation, and a member of a verified organization
- * that holds a Prefix by transfer has done nothing wrong.
+ * The ownership chain asks whether the Prefix has an owner whose authorization
+ * can exist (spec §7.3). While an allocation stands — `active`, `locked` (a
+ * dispute hold, which suspends only transfer and new registration, §7.2),
+ * `redemption` (a lapsed term in its grace period, still held) — it has a
+ * holder, and the holder's authorization is what the rest of the chain checks.
+ * A `released` allocation has no holder: nobody can be authorized beneath it,
+ * and its published versions keep resolving without anyone (spec §9.3).
+ * `requested` and `reserved` never had names beneath them.
+ *
+ * ORGANIZATION STATUS IS DELIBERATELY NOT READ HERE (12 Sept 2026 review).
+ * Spec §9.3 lets the Registry refuse only on grounds the specification states,
+ * and "the operator suspended this organization" is not one. What suspension
+ * MEANS is expressed in the facts this chain does read: a steward who suspends
+ * an organization locks its allocations (no new registration, §7.2) and
+ * suspends the grants it made; dissolution sends its allocations into
+ * redemption and then release. Those are allocation and authorization facts,
+ * with stated meanings, and they are all the seam consults.
  */
-function orgMayAct(org: { status: string } | null): boolean {
-  return org !== null && (org.status === 'active' || org.status === 'verified');
+function allocationStands(allocation: Allocation): Decision | null {
+  if (allocation.status === 'released' || allocation.status === 'requested' || allocation.status === 'reserved') {
+    return deny(
+      'allocation-released',
+      `allocation "${allocation.tlp}" has status "${allocation.status}" and has no holder; nothing beneath it can be authorized, and what is published beneath it keeps resolving (spec §9.3)`,
+      allocation.tlp,
+      allocation.id,
+    );
+  }
+  return null;
 }
 
 /**
@@ -213,24 +234,9 @@ export async function authorizes(
     const blocked = allocationBlocksRegistration(allocation);
     if (blocked) return blocked;
   }
-
-  // --- The holder organization must be in good standing, on EVERY path ------
-  //
-  // Checked before the branch, not inside one. A suspended owner's grantee must
-  // not keep writing beneath a Prefix whose management writes are frozen —
-  // suspension does not change allocation status, so nothing else would catch
-  // it, and putting this check inside the membership branch (as it was) left
-  // exactly that hole open on the scope path.
-
-  const holder = await store.organizationById(allocation.org_id);
-  if (!orgMayAct(holder)) {
-    return deny(
-      'holder-org-not-active',
-      `the organization holding "${tlp}" has status "${holder?.status ?? 'missing'}"; management writes beneath it are frozen (§7.1)`,
-      tlp,
-      allocation.id,
-    );
-  }
+  // On every path: an allocation nobody holds authorizes nobody.
+  const unheld = allocationStands(allocation);
+  if (unheld) return unheld;
 
   // --- Path A: the actor is a member of the holding organization ------------
 
@@ -282,9 +288,12 @@ export async function authorizes(
   for (const candidate of covering) {
     if (candidate.status !== 'active') continue;
     if (candidate.expires_at && candidate.expires_at <= now) continue;
-
-    const grantee = await store.organizationById(candidate.grantee_org_id);
-    if (!orgMayAct(grantee)) continue;
+    // A grant is the CURRENT holder's authorization or it is nothing. A grant
+    // made by a former holder lapses the moment the Prefix changes hands
+    // (§8.4: revoked by default; the new holder re-grants or accepts), and a
+    // grantee cannot grant onward (§8.3: not re-delegable) — both enforced by
+    // this one comparison, which is why granted_by_org_id exists (Q7b).
+    if (candidate.granted_by_org_id !== allocation.org_id) continue;
 
     return {
       allowed: true,
@@ -321,10 +330,9 @@ export async function authorizes(
     );
   }
 
-  const grantee = await store.organizationById(best.grantee_org_id);
   return deny(
-    'grantee-org-not-active',
-    `the organization granted scope "${best.scope}" has status "${grantee?.status ?? 'missing'}"`,
+    'scope-not-from-current-holder',
+    `authorization scope "${best.scope}" was granted by an organization that does not hold "${tlp}" now; a grant lapses when the Prefix changes hands (§8.4) and a grantee cannot grant onward (§8.3)`,
     tlp,
     allocation.id,
   );

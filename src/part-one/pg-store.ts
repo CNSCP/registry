@@ -53,7 +53,7 @@ export class PgOwnershipStore implements OwnershipStore {
 
   async authorizationsForAllocation(allocationId: string): Promise<AuthorizationRecord[]> {
     const { rows } = await this.db.query<AuthorizationRecord>(
-      `SELECT id, allocation_id, scope, grantee_org_id, status, granted_at, expires_at
+      `SELECT id, allocation_id, scope, grantee_org_id, granted_by_org_id, status, granted_at, expires_at
          FROM authorization_record
         WHERE allocation_id = $1`,
       [allocationId],

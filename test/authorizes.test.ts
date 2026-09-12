@@ -96,6 +96,7 @@ beforeEach(() => {
         allocation_id: 'alloc-ashrae',
         scope: 'ashrae.135',
         grantee_org_id: ORG.committee,
+        granted_by_org_id: ORG.ashrae,
         status: 'active',
         granted_at: new Date('2026-02-01'),
         expires_at: null,
@@ -127,14 +128,12 @@ describe('authority is not remembered — it is re-derived from the ownership ta
     assert.equal(current.reason, 'holder-member');
   });
 
-  test('a grant does not survive the transfer of the allocation it was made on, unless the new holder keeps it', async () => {
-    // The record lives on the allocation, so it moves with the Prefix; the
-    // new holder revokes it or keeps it. What the seam does: honours it while
-    // it is active. That is a policy the transfer workflow must decide (§8.4).
+  test('a grant does not survive the transfer of the allocation it was made on (§8.4: revoked by default)', async () => {
     const transferred = { ...store.allocations.get('ashrae')!, org_id: ORG.outsider };
     store.allocations.set('ashrae', transferred);
     const committee = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.x', { intent: 'publish' });
-    assert.equal(committee.allowed, true, 'still honoured until revoked — the transfer workflow must decide');
+    assert.equal(committee.allowed, false);
+    assert.equal(committee.reason, 'scope-not-from-current-holder');
   });
 });
 
@@ -307,28 +306,64 @@ describe('the negatives — §23 priority 4', () => {
     assert.equal(d.reason, 'allocation-not-active');
   });
 
-  test('a suspended organization has its management writes frozen (§7.1)', async () => {
+  test('organization status is not the seam\'s business: a suspended holder\'s member is judged on allocation and grant facts alone', async () => {
+    // 12 Sept 2026 review: "the operator suspended this organization" is not a
+    // ground spec §9.3 states. What suspension MEANS is expressed as facts the
+    // seam does read — the steward locks the allocations (no new names) and
+    // suspends the grants. Here nothing has been locked, so the member acts.
     const d = await authorizes(store, human(USER.suspendedMember), 'suspended-co.thing');
-    assert.equal(d.allowed, false);
-    assert.equal(d.reason, 'holder-org-not-active');
+    assert.equal(d.allowed, true);
+    assert.equal(d.reason, 'holder-member');
   });
 
-  test('a suspended HOLDER freezes its grantees too, not only its own members', async () => {
-    // The hole the first cut of this file left open: the holder-status check
-    // sat inside the membership branch, so a scope grantee kept writing beneath
-    // a Prefix whose management writes were frozen. Suspension does not change
-    // allocation status, so nothing else would have caught it.
-    store.organizations.get(ORG.ashrae)!.status = 'suspended';
-    const d = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.bacnet');
-    assert.equal(d.allowed, false);
-    assert.equal(d.reason, 'holder-org-not-active');
+  test('…and a suspension carried out properly — the allocation locked — stops new names and nothing else', async () => {
+    const locked = { ...store.allocations.get('suspended-co')!, status: 'locked' as const };
+    store.allocations.set('suspended-co', locked);
+    const reg = await authorizes(store, human(USER.suspendedMember), 'suspended-co.thing');
+    assert.equal(reg.allowed, false);
+    assert.equal(reg.reason, 'allocation-not-active');
+    const pub = await authorizes(store, human(USER.suspendedMember), 'suspended-co.thing', { intent: 'publish' });
+    assert.equal(pub.allowed, true, 'a version may still be published on an existing name (§14)');
   });
 
-  test('a suspended GRANTEE organization cannot use its scope', async () => {
-    store.organizations.get(ORG.committee)!.status = 'suspended';
-    const d = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.bacnet');
+  test('a released allocation has no holder: nobody is authorized beneath it, for any act', async () => {
+    const released = { ...store.allocations.get('ashrae')!, status: 'released' as const };
+    store.allocations.set('ashrae', released);
+    for (const intent of ['register', 'publish'] as const) {
+      const member = await authorizes(store, human(USER.ashraeAdmin), 'ashrae.62', { intent });
+      assert.equal(member.allowed, false, intent);
+      assert.equal(member.reason, intent === 'register' ? 'allocation-not-active' : 'allocation-released', intent);
+      const grantee = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.x', { intent });
+      assert.equal(grantee.allowed, false, intent);
+    }
+  });
+
+  test('a grant lapses when the Prefix changes hands: revoked by default until the new holder re-grants (§8.4)', async () => {
+    const transferred = { ...store.allocations.get('ashrae')!, org_id: ORG.outsider };
+    store.allocations.set('ashrae', transferred);
+    const stale = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.x', { intent: 'publish' });
+    assert.equal(stale.allowed, false);
+    assert.equal(stale.reason, 'scope-not-from-current-holder');
+    // The new holder re-grants (or accepts by re-issuing): effective again.
+    store.addAuthorization({
+      id: 'grant-135-regranted', allocation_id: 'alloc-ashrae', scope: 'ashrae.135',
+      grantee_org_id: ORG.committee, granted_by_org_id: ORG.outsider, status: 'active',
+      granted_at: new Date('2026-09-12'), expires_at: null,
+    });
+    const fresh = await authorizes(store, human(USER.committeeAuthor), 'ashrae.135.x', { intent: 'publish' });
+    assert.equal(fresh.allowed, true);
+    assert.equal(fresh.authorization_id, 'grant-135-regranted');
+  });
+
+  test('a grantee cannot grant onward: a record it issues names itself, not the holder (§8.3, Q7b)', async () => {
+    store.addAuthorization({
+      id: 'grant-onward', allocation_id: 'alloc-ashrae', scope: 'ashrae.135.wg',
+      grantee_org_id: ORG.outsider, granted_by_org_id: ORG.committee, status: 'active',
+      granted_at: new Date('2026-09-12'), expires_at: null,
+    });
+    const d = await authorizes(store, human(USER.outsider), 'ashrae.135.wg.thing', { intent: 'publish' });
     assert.equal(d.allowed, false);
-    assert.equal(d.reason, 'grantee-org-not-active');
+    assert.equal(d.reason, 'scope-not-from-current-holder');
   });
 
   test('a closed Prefix refuses new names while its existing ones are untouched', async () => {
@@ -444,6 +479,7 @@ describe('an actor in several organizations', () => {
       allocation_id: 'alloc-ashrae',
       scope: 'ashrae.135.bacnet',
       grantee_org_id: ORG.committee,
+      granted_by_org_id: ORG.ashrae,
       status: 'active',
       granted_at: new Date('2026-03-01'),
       expires_at: null,
@@ -462,6 +498,7 @@ describe('an actor in several organizations', () => {
       allocation_id: 'alloc-ashrae',
       scope: 'ashrae.135.bacnet',
       grantee_org_id: ORG.committee,
+      granted_by_org_id: ORG.ashrae,
       status: 'revoked',
       granted_at: new Date('2026-03-01'),
       expires_at: null,

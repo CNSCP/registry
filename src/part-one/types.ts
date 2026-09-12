@@ -47,6 +47,8 @@ export type AuthorizationRecord = {
   allocation_id: string;
   scope: string;
   grantee_org_id: string;
+  /** The organization that made the grant — must be the allocation's holder NOW for the grant to count (§8.3, §8.4). */
+  granted_by_org_id: string;
   status: AuthorizationStatus;
   granted_at: Date;
   expires_at: Date | null;

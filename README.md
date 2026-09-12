@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.7.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.8.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
 by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
@@ -77,10 +77,11 @@ since hand-authoring by an assistant is the Phase 0 publication path:
   and publish carry it as a parameter, per the 8 Sept revision
 - `npm run authoritative` starts the combined authoring+resolution host it talks to
 
-Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, reads and edits keep
-working — edits via a local fallback to the recorded registrant, which grants nothing while
-the seam is healthy — and only registration and publication block, with a structured 503
-that says what still works. An outage is never reported as a denial.
+Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, every read keeps working
+and every write waits, with a structured 503 that says so — spec §7.3 requires the owner's
+authorization for every act on a name, so nothing is inferred from a name's recorded
+registrant (that fallback was removed on 12 Sept 2026). An outage is never reported as a
+denial.
 
 And Part Two's storage layer (§12), enough to hold what the import produces:
 
