@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.10.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.11.
 
 **The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
 by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
@@ -67,6 +67,10 @@ Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publ
 - **Credentials as rows** — a `credential` table of hashed tokens with scopes, minted and revoked
   with `npm run operator -- credential mint | revoke | list` (plus `user add`, `member add`),
   every act audited; the token is shown once and stored nowhere. [`deploy/CREDENTIALS.md`](deploy/CREDENTIALS.md)
+- **Transfers and renames** (§8.4 operator form, §9.2) — `npm run operator -- allocation transfer`
+  moves a Prefix to another holder with recorded evidence (`--create` to make the organization);
+  `organization rename` changes a display name. Both are public journal events that instances
+  apply; the seam makes the old holder's members and grants lapse without touching a row
 - **Self-service identity** (§15.3) — a person signs in with Google or GitHub at `/account`
   (the Registry holds no passwords), is linked to their user by the provider's subject or a
   verified email, and mints and revokes their own tokens there; `operator` is never mintable

@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.10 · 12 September 2026
+**Status:** Draft v0.11 · 13 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, clean reading copy §1–§10, assembled **8 September 2026** from the canon working drafts at that date — §1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, because the 2026 revision is still in draft and not yet public.** This design is written against one identifiable artifact:
@@ -23,6 +23,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.11 lets a Prefix change hands (13 September).** §8.4 gains its operator form: `allocation transfer`, evidence required, one audited public transaction, the seam doing the rest; and §9.2 an `organization rename`. §10.2 ruling 4's release path now exists, and its first uses are recorded there. §5 clarifies that the operator is an organization — CNS/CP — distinct from Padi, Inc. §3.2 withholds `account` and `auth` (the §15.3 paths). §25 gains Q13, for OSTERA: whether the specification should standardize the Registry's HTTP interface and reserve the words it needs.
 >
 > **v0.10 lets people in by themselves (12 September, evening).** New §15.3: a person signs in with Google or GitHub, is linked to their user by the provider's subject or by a verified email that exactly one user carries, and mints and revokes their own tokens on `/account`; the operator's act per author shrinks to one `member add` by email. Sessions are browser state honoured on `/auth/*` and `/account` only — no act on the Registry is ever authenticated by a cookie — and the Registry holds no password. Two tables (migration 11), no new inputs to the seam. Also: §15.2's working pattern corrected to the split scopes; §25's Phase 1 row records the delivery.
 >
@@ -264,6 +266,8 @@ This is a split in design and build units, not necessarily in deployment. One co
 | **Operator — Reviewer** | Verification decisions; restricted-Prefix requests. |
 | **Operator — Steward** | Reviewer rights plus disputes, forced transfers, suspensions, and reserved/restricted list changes. Two-steward rule on irreversible acts. |
 
+*The operator is an organization too.* The Phase 0 seed created one organization flagged `is_operator` and named it "Padi, Inc." after the company that stood the Registry up, so for a year Padi-the-holder of `cp:padi` and the institution holding every reserved, withheld and unclaimed Prefix were one row. With `/account` (§15.3) showing every member the Prefixes their organizations reach, the two roles want two rows. *Ruled 13 Sept 2026:* the operator organization is **CNS/CP** — the institution that runs the Registry and publishes under `cp.*` and `cns.*`, whose members are the operator's people and nobody else — and Padi, Inc. is an ordinary holder carved out of it by transfer (§8.4).
+
 ## 6. Data model
 
 ### 6.1 `organization`
@@ -368,6 +372,17 @@ Spec §7.3 requires only that the owner's authorization exist; how an owner gove
 - **Forced:** dispute outcome, legal order, or recovery from a dissolved organization. Two-steward sign-off, permanent record.
 - Published versions travel with the Prefix byte-identical. A transfer changes who may register and publish next; it changes nothing already published. Outstanding grants lapse (§8.3) unless the new holder re-issues them. The new holder may update the stewardship Header fields — `Owner` exists as a mutable field precisely because "a Prefix may change hands" (spec §6.6).
 
+**The operator form, as built (Phase 1, 13 September 2026).** Neither transfer above exists yet: the voluntary one needs an admin on each side (Q7a) and the forced one a steward panel. What Phase 1 needs is narrower and older than both — **the release of a grandfathered Prefix to its evident owner**, which §10.2 ruling 4 promised for `c4sb`, `ibb`, `kubecns`, `novant`, `onuma`, `openjs` and `skycentrics` "on verification", and which §10.2 then noted has no path for a claimant without a domain to challenge. This gives it one, in the mold of §10.2's Phase 0 form: an operator act, evidence required, one audited transaction.
+
+```
+npm run operator -- allocation transfer --tlp ibb --to "C4SB (Coalition for Smarter Buildings)" [--create] \
+    --evidence "<why this organization is the holder>" --by anto@padi.io
+```
+
+`--to` names the destination by exact name or id; it must exist unless `--create` says you mean to make one (then it is created `active`, with `verification = { method: 'operator-ruling', evidence, ruled_by }` exactly as `allocate` creates one), so a misspelling refuses rather than quietly conjuring a second organization and handing it a Prefix. In one transaction the allocation's `org_id` becomes the destination and `allocation.transfer` is written with `before { tlp, holder, org_id }`, `after { tlp, holder, org_id, status, class, grandfathered, expires_at }` and the evidence as rationale. Nothing else changes: `grandfathered`, `class` and the term stay; every published version beneath the Prefix is untouched, because resolution never consults governance state (§4.1 rule 1). It refuses, with nothing written: an allocation that does not exist; one whose status is not `active` (`locked` suspends transfer by §7.2; `redemption` and `released` have nothing to transfer); a destination that is already the holder; an unknown destination without `--create`; and evidence under twenty characters.
+
+What follows needs no workflow. Every grant the previous holder made lapses at once, because the seam honours a grant only while `granted_by_org_id` is the current holder (§6.4); the previous holder's members lose reach under the Prefix on their next request and the new holder's gain it, since `authorizes()` reads the holder on every act and caches nothing. `allocation.transfer` is public in the journal (§20.1), carrying the subject as hashed and the current allocation facts; a local instance applies it by updating its copy of the holder, creating the organization row if it has not seen it. The evidence for a claimant without a web identity is an operator attestation — Q9's second method in its simplest form, with the weakness Q9 names: one person's word, recorded and reversible by another transfer. The two-steward discipline of the forced form is Phase 3's tightening. **First uses (13 Sept 2026):** the operator organization renamed CNS/CP; `c4sb`, `ibb` and `dbp` released to C4SB (Coalition for Smarter Buildings); `arete` to Project Arete; `padi` carved out to a new Padi, Inc.
+
 ### 8.5 Disputes
 
 1. A verified organization files against an allocation on stated grounds: trademark conflict, verification fraud, or abandonment.
@@ -403,6 +418,10 @@ GET/POST /operator/verifications/{id}/approve|reject
 GET/POST /operator/disputes · /disputes/{id}/decide         two-steward rule
 POST     /operator/allocations                              allocate a Prefix by operator ruling — BUILT (Phase 0 form: evidence
                                                             required, policy consulted, one audited transaction; §10.2's mold)
+         allocation transfer · organization rename          BUILT 13 Sept 2026 as CLI acts (§8.4 operator form): move a Prefix's
+                                                            holder with evidence; rename an organization (display name only,
+                                                            same id — every past journal entry still points at the same row).
+                                                            Both public in the journal.
 POST     /operator/allocations/{tlp}/lock|suspend|force-transfer
 GET/PUT  /operator/policy/reserved · /policy/restricted · /policy/limits
 GET      /operator/audit                                    full chain, export
@@ -479,6 +498,8 @@ Spec §7.1 grandfathers pre-specification Prefixes as allocated, but not to anyo
 **4 — Prefixes with real external claimants are operator-held, released on verification.** `c4sb`, `ibb`, `kubecns`, `novant`, `onuma`, `openjs`, `skycentrics` are allocated to the operator at import with `grandfathered = true`, and released to the evident owner when that organization verifies under §8.1. Nothing is claimed on anyone's behalf and the allocation record is truthful from the first day. Published versions beneath them resolve throughout, since resolution never consults governance state (§4.1 rule 1) — a claimant's Profiles keep working whether or not they ever come to claim the Prefix.
 
 Every one of these is written into the audit chain (§4.3) as an operator act with recorded rationale, so the bootstrap is as inspectable as anything that follows it.
+
+*13 Sept 2026:* the release path of ruling 4 exists (§8.4, operator form). The first releases are `c4sb`, `ibb` and `dbp` to C4SB (Coalition for Smarter Buildings), on the operator's attestation that their representative is known; the remaining claimant Prefixes wait for a claimant to appear.
 
 **Per-Prefix dispositions were reviewed individually on 31 August 2026**, and six that rested on thin evidence were confirmed: `haystack` and `modbus` stay ordinary operator holdings rather than being parked, since Padi authored the records and a transfer later is a normal §8.4 operation; `cns` is allocated to the operator *and* on the §3.2 infrastructure withheld list, which is what withholding looks like in practice; and `kubecns` names Tacos Linux on the strength of one record's company field, which is provisional until §8.1 verification makes it real.
 

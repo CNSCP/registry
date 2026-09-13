@@ -24,6 +24,18 @@ attaching them to the organization that holds their Prefix.
 
    `member add` works before they have signed in, too: a row created with `user add` is
    claimed by its owner on first sign-in by verified email (§15.3 rule 2).
+
+   If the organization does not hold its Prefix yet — a grandfathered claimant Prefix still in the
+   operator's custody, say — release it first (§8.4, operator form), creating the organization in
+   the same act:
+
+   ```sh
+   kubectl -n cp-registry exec deploy/registry -- \
+     npm run operator -- allocation transfer --tlp ibb --to "C4SB (Coalition for Smarter Buildings)" --create \
+       --evidence "Released to its claimant under §10.2 ruling 4; <who represents them, and how you know>" --by anto@padi.io
+   ```
+
+   Without `--create` an unknown name refuses, so a misspelling cannot make a second organization.
 3. **They mint their tokens** on `/account`: a label, a kind, and any subset of the author
    scopes. The token is shown once. Their first act should be a rehearsal
    (`check_publishable` / `?dry_run=true`) so the token's reach is proven before anything
