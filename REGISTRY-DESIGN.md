@@ -163,7 +163,7 @@ Beyond those, the allocation function may withhold Prefixes as policy (spec §7.
 | Class | Prefixes | Rationale |
 |---|---|---|
 | Infrastructure | `cp`, `cns`, `realm`, `arete`, `registry`, `registrar`, `local`, `internal` | Reserved against future infrastructure naming and confusion with reference syntax. |
-| Path-shadowing | `console`, `assets`, `profiles`, `distribution`, `health`, `well-known`, `operator` | A single dotless segment resolves to the allocation it denotes (§19.1), so any reserved path must also be a withheld Prefix or it would be shadowed. Extend both lists together. |
+| Path-shadowing | `console`, `assets`, `profiles`, `distribution`, `health`, `well-known`, `operator`, `account`, `auth` | A single dotless segment resolves to the allocation it denotes (§19.1), so any reserved path must also be a withheld Prefix or it would be shadowed. Extend both lists together — `account` and `auth` joined on 13 Sept 2026, a day after §15.3 took the paths, which is the failure mode this row exists to prevent. |
 | Documentary | `acme`, `xyz` | Conventional fake-company names, serving the same purpose as spec-reserved `example`. `xyz.ics` cites `www.example.com` as its website. Withheld so neither can later be allocated to a real party and be misread. |
 | Operator-held | `padi`, `hello`, `proto` | `padi` and `hello` are the operator's own. `proto` is withheld rather than allocated because its contents come from four unrelated organizations (§10.2 ruling 2). |
 | Restricted | Single-character Prefixes; a published trademark watch list | Allocatable only on review, with recorded rationale. |
