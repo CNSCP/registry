@@ -255,6 +255,7 @@ function toEntry(row: JournalRow): JournalEntry {
       }
       break;
     case 'allocation.create':
+    case 'allocation.transfer':
       if (row.a_tlp !== null && row.a_id !== null) {
         entry.allocation = {
           id: row.a_id,

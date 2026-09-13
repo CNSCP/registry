@@ -272,6 +272,25 @@ async function apply(db: pg.PoolClient, entry: PublicEntry): Promise<void> {
       return;
     }
 
+    case 'allocation.transfer': {
+      const orgId = (subject['org_id'] as string | undefined) ?? entry.allocation?.org_id ?? entry.org_id;
+      const holder = (subject['holder'] as string | undefined) ?? entry.allocation?.holder;
+      if (!orgId || !holder) throw new FollowerError(`seq ${entry.seq}: a transfer with no destination organization`);
+      // The destination may be an organization this instance has never seen
+      // (created in the same act); the subject carries its name.
+      await db.query(`INSERT INTO organization (id, name, status) VALUES ($1, $2, 'active') ON CONFLICT (id) DO NOTHING`, [orgId, holder]);
+      const { rowCount } = await db.query(`UPDATE allocation SET org_id = $2, modified = now() WHERE id = $1`, [entry.subject_id, orgId]);
+      if (rowCount === 0) throw new FollowerError(`seq ${entry.seq}: a transfer of an allocation this instance does not hold`);
+      return;
+    }
+
+    case 'organization.rename': {
+      const name = subject['name'] as string | undefined;
+      if (!name) throw new FollowerError(`seq ${entry.seq}: a rename with no name`);
+      await db.query(`UPDATE organization SET name = $2, modified = now() WHERE id = $1`, [entry.subject_id, name]);
+      return;
+    }
+
     case 'allocation.create': {
       const facts = entry.allocation;
       const tlp = facts?.tlp ?? (subject['tlp'] as string | undefined);

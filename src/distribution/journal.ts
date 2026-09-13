@@ -25,6 +25,8 @@ export const PUBLIC_ACTIONS = [
   'profile.stewardship',
   'profile.discard',
   'allocation.create',
+  'allocation.transfer',
+  'organization.rename',
 ] as const;
 
 export type PublicAction = (typeof PUBLIC_ACTIONS)[number];

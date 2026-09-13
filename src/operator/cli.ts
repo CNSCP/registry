@@ -10,6 +10,9 @@
  *       --scopes register,steward,release --label "Claude Desktop" --by anto@padi.io
  *   npm run operator -- credential list
  *   npm run operator -- credential revoke --id <uuid> --reason "rotated" --by anto@padi.io
+ *   npm run operator -- allocation transfer --tlp ibb --to "C4SB (Coalition for Smarter Buildings)" [--create] \
+ *       --evidence "<why this organization is the holder>" --by anto@padi.io
+ *   npm run operator -- organization rename --org "Padi, Inc." --to "CNS/CP" --by anto@padi.io
  *
  * Runs against DATABASE_URL directly — inside the cluster via
  * `kubectl -n cp-registry exec deploy/registry -- npm run operator -- …` —
@@ -32,6 +35,8 @@ import type pg from 'pg';
 import { closePool, getPool, inTransaction } from '../db.ts';
 import { record } from '../audit.ts';
 import { list, mint, revoke } from '../credentials/store.ts';
+import { transferTlp } from '../part-one/transfer.ts';
+import { renameOrganization } from '../part-one/organization.ts';
 import { parseScopes, SCOPES } from '../part-two/routes.ts';
 
 const [noun, verb, ...rest] = process.argv.slice(2);
@@ -51,6 +56,12 @@ const { values } = parseArgs({
     'id': { type: 'string' },
     'reason': { type: 'string' },
     'by': { type: 'string' },
+    'tlp': { type: 'string' },
+    'to': { type: 'string' },
+    'create': { type: 'boolean' },
+    'evidence': { type: 'string' },
+    'website': { type: 'string' },
+    'contact': { type: 'string' },
   },
 });
 
@@ -64,6 +75,9 @@ function usage(problem?: string): never {
                                         --scopes <a,b,c> --label "<what it is for>" --by <operator email>
   npm run operator -- credential list
   npm run operator -- credential revoke --id <uuid> --reason "<why>" --by <operator email>
+  npm run operator -- allocation transfer --tlp <prefix> --to "<org name or id>" [--create [--website <url>] [--contact <email>]]
+                                          --evidence "<why this organization is the holder>" --by <operator email>
+  npm run operator -- organization rename --org "<org name or id>" --to "<new name>" --by <operator email>
 
 Scopes: ${SCOPES.join(' · ')}`);
   process.exit(1);
@@ -204,6 +218,40 @@ async function main(): Promise<void> {
     const who = requireBy();
     const done = await inTransaction((db) => revoke(db, values.id!, who, values.reason!));
     console.log(done ? `credential ${values.id} revoked; it answers 401 from now on` : `credential ${values.id} was already revoked, or does not exist`);
+    return;
+  }
+
+  if (noun === 'allocation' && verb === 'transfer') {
+    if (!values.tlp || !values.to || !values.evidence) usage('allocation transfer needs --tlp, --to and --evidence.');
+    const who = requireBy();
+    const outcome = await inTransaction((db) =>
+      transferTlp(db, {
+        tlp: values.tlp!, to: values.to!, evidence: values.evidence!,
+        ...(values.create ? { create: true } : {}),
+        ...(values.website ? { website: values.website } : {}),
+        ...(values.contact ? { contactEmail: values.contact } : {}),
+        actor: { id: who, kind: 'operator', principal: who },
+      }),
+    );
+    if (!outcome.transferred) {
+      console.error(`refused (${outcome.code}): ${outcome.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    console.log(`cp:${outcome.tlp}  ${outcome.from.name}  →  ${outcome.to.name}${outcome.to.created ? '  (organization created)' : ''}`);
+    return;
+  }
+
+  if (noun === 'organization' && verb === 'rename') {
+    if (!values.org || !values.to) usage('organization rename needs --org and --to.');
+    const who = requireBy();
+    const outcome = await inTransaction((db) => renameOrganization(db, { org: values.org!, to: values.to!, actor: { id: who, kind: 'operator', principal: who } }));
+    if (!outcome.renamed) {
+      console.error(`refused (${outcome.code}): ${outcome.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    console.log(`organization ${outcome.id}  "${outcome.from}"  →  "${outcome.to}"`);
     return;
   }
 
