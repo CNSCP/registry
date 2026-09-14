@@ -7,6 +7,9 @@
  */
 
 import { test, describe } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 import { availability, isSpecReserved, isWithheld, RESERVED_PATHS, WITHHELD } from '../src/policy.ts';
@@ -18,6 +21,8 @@ import {
   IMPORT_RENAMES,
 } from '../src/seed/grandfathered.ts';
 import { hashSubject } from '../src/audit.ts';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe('prefix policy (§3.2)', () => {
   test('the specification reserves exactly two, and neither is allocatable', () => {
@@ -258,5 +263,34 @@ describe('audit hashing (§4.3)', () => {
   test('absent subjects hash to null, not to the hash of "undefined"', () => {
     assert.equal(hashSubject(undefined), null);
     assert.equal(hashSubject(null), null);
+  });
+});
+
+describe('the operator command line parses every verb it documents', () => {
+  // `anchor key add` shipped as a three-word form, and node's parseArgs refuses
+  // a positional — so the command in RELEASING.md could never have run. Nothing
+  // caught it, because nothing exercised the CLI's own argument shape.
+  test('every documented verb is two words, so parseArgs sees only flags', () => {
+    const cli = readFileSync(resolve(here, '../src/operator/cli.ts'), 'utf8');
+    const usage = cli.slice(cli.indexOf('console.error(`Usage:'), cli.indexOf('Scopes:'));
+    const lines = usage
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('npm run operator --'));
+    assert.ok(lines.length >= 8, 'the usage block should list every verb');
+
+    for (const line of lines) {
+      const after = line.replace('npm run operator -- ', '').split(/\s+/);
+      const positionals = [];
+      for (const word of after) {
+        if (word.startsWith('--')) break;
+        positionals.push(word);
+      }
+      assert.equal(
+        positionals.length,
+        2,
+        `"${positionals.join(' ')}" is ${positionals.length} words before the first flag; the CLI reads a noun and a verb and hands the rest to parseArgs, which refuses positionals`,
+      );
+    }
   });
 });

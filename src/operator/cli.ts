@@ -14,6 +14,8 @@
  *       --evidence "<why this organization is the holder>" --by anto@padi.io
  *   npm run operator -- allocation withhold --tlp account --by anto@padi.io
  *   npm run operator -- allocation withhold --all [--dry-run] --by anto@padi.io
+ *   npm run operator -- anchor trust --key-id cp-anchor-2026-09 --public-key <base64url> --by anto@padi.io
+ *   npm run operator -- anchor publish --by anto@padi.io   (signed document on stdin)
  *   npm run operator -- organization rename --org "Padi, Inc." --to "CNS/CP" --by anto@padi.io
  *
  * Runs against DATABASE_URL directly — inside the cluster via
@@ -91,7 +93,7 @@ function usage(problem?: string): never {
                                           --evidence "<why this organization is the holder>" --by <operator email>
   npm run operator -- allocation withhold --tlp <prefix> | --all [--dry-run] --by <operator email>
   npm run operator -- organization rename --org "<org name or id>" --to "<new name>" --by <operator email>
-  npm run operator -- anchor key add --key-id <id> --public-key <base64url> [--vouched-by <id> --vouch-signature <sig>] --by <operator email>
+  npm run operator -- anchor trust --key-id <id> --public-key <base64url> [--vouched-by <id> --vouch-signature <sig>] --by <operator email>
   npm run operator -- anchor publish --by <operator email>   (the signed document on stdin)
 
 Scopes: ${SCOPES.join(' · ')}`);
@@ -302,10 +304,8 @@ async function main(): Promise<void> {
 
   // --- §20.2. The Registry holds public keys and verifies; it never signs. --
 
-  if (noun === 'anchor' && verb === 'key' ) {
-    // `anchor key add` — the third word arrives in rest, so check it plainly.
-    if (rest[0] !== 'add') usage('anchor key takes the verb "add".');
-    if (!values['key-id'] || !values['public-key']) usage('anchor key add needs --key-id and --public-key.');
+  if (noun === 'anchor' && verb === 'trust') {
+    if (!values['key-id'] || !values['public-key']) usage('anchor trust needs --key-id and --public-key.');
     requireBy();
     const vouchedBy = values['vouched-by'] ?? null;
     const vouchSignature = values['vouch-signature'] ?? null;
@@ -347,7 +347,7 @@ async function main(): Promise<void> {
       // verify is publishing someone else's claim under its own name.
       const keys = await keyList(db);
       const key = keys.find((k) => k.key_id === document.key_id);
-      if (!key) return { refused: `no such anchor key "${document.key_id}" — register it first with \`anchor key add\`` };
+      if (!key) return { refused: `no such anchor key "${document.key_id}" — register it first with \`anchor trust\`` };
       if (!verifyAnchor(document, key.public_key)) return { refused: 'the signature does not verify against that key' };
       return recordAnchor(db, document);
     });

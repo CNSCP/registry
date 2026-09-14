@@ -78,7 +78,7 @@ function newKey(keyId: string): void {
   );
   console.log(`Then register the public key on the Registry:\n`);
   console.log(
-    `  kubectl -n cp-registry exec deploy/registry -- npm run operator -- anchor key add \\\n` +
+    `  kubectl -n cp-registry exec deploy/registry -- npm run operator -- anchor trust \\\n` +
       `      --key-id ${keyId} --public-key ${publicRaw} --by <operator email>\n`,
   );
 }

@@ -101,6 +101,13 @@ on divergence; anyone can check from outside with
 `npm run verify-journal -- https://cp.cnscp.io --anchor <key id>`. **The Registry holds no
 private key**: a key it could use to sign is a key that could sign a forked head.
 
+The root key, for checking by eye — vouched for by nothing, which is what makes it the root:
+
+```
+key_id      cp-anchor-2026-09
+fingerprint 463f 5b19 07b9 4d22 569a 5710 a1ae 2525 eaf4 a23e 2bf6 52fa 4c94 10ae a843 ca72
+```
+
 Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, every read keeps working
 and every write waits, with a structured 503 that says so — spec §7.3 requires the owner's
 authorization for every act on a name, so nothing is inferred from a name's recorded

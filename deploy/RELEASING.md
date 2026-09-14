@@ -112,7 +112,7 @@ is the one thing the mechanism cannot vouch for. Then register the public half:
 
 ```sh
 kubectl -n cp-registry exec deploy/registry -- npm run operator -- \
-  anchor key add --key-id cp-anchor-2026-09 --public-key <base64url> --by anto@padi.io
+  anchor trust --key-id cp-anchor-2026-09 --public-key <base64url> --by anto@padi.io
 ```
 
 Then weekly, and after anything irreversible (a publication, a deprecation, an allocation,

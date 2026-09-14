@@ -1004,6 +1004,16 @@ Ed25519, detached, via Node's `crypto` — no JWS, no certificate chain, no depe
 
 **The comparison is against what the follower verified, never a re-fetch.** `journal_entry` (migration 7) already holds the event hash at every sequence the instance has followed, so the evidence is what it saw at the time. Re-fetching that stretch from upstream would be worthless: a host serving a fork would serve the fork that matches its own anchor.
 
+**The root key, to be checked by eye.** The first key was generated on the operator's machine on 14 September 2026 and is the trust root for everything above. It is vouched for by nothing in this mechanism — that is what makes it the root — so it is published here, in the README and on cnscp.io, for a person to compare:
+
+```
+key_id      cp-anchor-2026-09
+public_key  Rj9bGQe5TSJWmlcQoa4lJer0oj4r9lL6TJQQrqhDynI
+fingerprint 463f 5b19 07b9 4d22 569a 5710 a1ae 2525 eaf4 a23e 2bf6 52fa 4c94 10ae a843 ca72
+```
+
+If an anchor you are handed names a key whose fingerprint is not this one, and is not vouched for by a chain leading back to it, it is not this Registry's anchor whatever it says in its `origin` field.
+
 **Rotation.** `anchor_key` (migration 12) holds each key's id, public key, validity dates, and — for every key after the first — the predecessor's signature over its canonical form, served at `GET /.well-known/cp-keys`. `keyIsTrusted()` walks from the key in question toward a root the verifier already believes in, iteratively, so a cyclic list terminates unvouched rather than looping. The first key is vouched for by nothing in this mechanism; its fingerprint is published in this section, in the README and on cnscp.io, to be checked by eye. That is the honest trust root available to a registry of this size, and naming it as such is better than dressing it up.
 
 **One anchor per head per key, and contradictions are kept.** `recordAnchor` refuses a *second, different* head signed for the same sequence under the same key rather than storing it quietly — two signatures over one sequence is the fork made visible, and it must reach a person rather than a table.
