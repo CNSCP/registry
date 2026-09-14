@@ -76,21 +76,79 @@ export async function latestAnchor(db: Queryable): Promise<(AnchorDocument & { v
  * exists to surface, and it must reach a person, not a table.
  */
 export type RecordOutcome =
-  | { recorded: true; already: boolean }
+  | { recorded: true; already: boolean; superseded?: true }
   | { recorded: false; code: 'contradiction'; message: string; held: string };
+
+function existingDocument(row: {
+  head_event_hash: string;
+  at_text: string;
+  signature: string;
+  origin: string;
+  head_seq: string;
+  key_id: string;
+}): AnchorDocument {
+  return {
+    journal_format: 1,
+    origin: row.origin,
+    head_seq: Number(row.head_seq),
+    head_event_hash: row.head_event_hash,
+    at: row.at_text,
+    key_id: row.key_id,
+    signature: row.signature,
+  };
+}
 
 export async function recordAnchor(
   db: Queryable,
   document: AnchorDocument,
   verdict?: { state: string; detail?: unknown },
+  options?: { verifyStored?: (stored: AnchorDocument) => boolean },
 ): Promise<RecordOutcome> {
-  const { rows } = await db.query<{ head_event_hash: string }>(
-    `SELECT head_event_hash FROM anchor WHERE head_seq = $1 AND key_id = $2`,
+  const { rows } = await db.query<{
+    head_event_hash: string;
+    at_text: string;
+    signature: string;
+    origin: string;
+    head_seq: string;
+    key_id: string;
+  }>(
+    `SELECT head_event_hash, at_text, signature, origin, head_seq::text, key_id
+       FROM anchor WHERE head_seq = $1 AND key_id = $2`,
     [document.head_seq, document.key_id],
   );
   const existing = rows[0];
   if (existing) {
-    if (existing.head_event_hash === document.head_event_hash) return { recorded: true, already: true };
+    if (existing.head_event_hash === document.head_event_hash) {
+      // Same head, same key. Ordinarily a no-op — but a stored anchor that
+      // does not verify is not an anchor, it is a failed publication, and a
+      // verifiable one for the same head supersedes it. (Learned the hard
+      // way: the first anchor this Registry published was stored with an
+      // `at` it had not been signed with, and nothing could replace it.)
+      if (options?.verifyStored && !options.verifyStored(existingDocument(existing))) {
+        await db.query(
+          // `at` is bound TWICE, to two placeholders, and never cast between
+          // them: one parameter shared by a timestamptz column and a text
+          // column is inferred as a timestamptz, and `::text` then renders it
+          // in Postgres's own format — which is how the signed bytes got
+          // reformatted the first time. The rule has no exceptions, including
+          // in the code written to enforce it.
+          `UPDATE anchor
+              SET head_event_hash = $1, signed_at = $2, at_text = $3, signature = $4, origin = $5, recorded_at = now()
+            WHERE head_seq = $6 AND key_id = $7`,
+          [
+            document.head_event_hash,
+            document.at,
+            document.at,
+            document.signature,
+            document.origin,
+            document.head_seq,
+            document.key_id,
+          ],
+        );
+        return { recorded: true, already: false, superseded: true };
+      }
+      return { recorded: true, already: true };
+    }
     return {
       recorded: false,
       code: 'contradiction',

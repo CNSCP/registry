@@ -350,7 +350,9 @@ async function main(): Promise<void> {
       if (!key) return { refused: `no such anchor key "${document.key_id}" — register it first with \`anchor trust\`` };
       if (!verifyAnchor(document, key.public_key)) return { refused: 'the signature does not verify against that key' };
 
-      const outcome = await recordAnchor(db, document);
+      const outcome = await recordAnchor(db, document, undefined, {
+        verifyStored: (stored) => verifyAnchor(stored, key.public_key),
+      });
 
       // Verify what will be SERVED, not what arrived. The first anchor this
       // Registry published verified in memory and failed as served, because
@@ -387,7 +389,9 @@ async function main(): Promise<void> {
     console.log(
       outcome.already
         ? `anchor at head ${document.head_seq} was already published; nothing changed`
-        : `anchor published: head ${document.head_seq} signed by ${document.key_id} at ${document.at}`,
+        : outcome.superseded
+          ? `anchor at head ${document.head_seq} REPLACED: the stored one did not verify as served, this one does`
+          : `anchor published: head ${document.head_seq} signed by ${document.key_id} at ${document.at}`,
     );
     return;
   }

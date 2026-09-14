@@ -378,3 +378,51 @@ describe('what is served is what was signed (§20.2)', () => {
     assert.equal(served.signature, rows[0]!.signature);
   });
 });
+
+describe('a stored anchor that does not verify is not an anchor (§20.2)', () => {
+  test('a verifiable anchor replaces an unverifiable one for the same head', async () => {
+    await authoritative.pool.query(`DELETE FROM anchor`);
+
+    // Exactly the state canon was left in: the row says one thing, the bytes
+    // it was signed over said another, and nothing could supersede it.
+    const at = '2026-09-14T16:07:30Z';
+    const good = anchor(root.priv, { head_seq: 42, head_event_hash: 'c'.repeat(64), at });
+    await recordAnchor(authoritative.pool, good);
+    await authoritative.pool.query(`UPDATE anchor SET at_text = '2026-09-14T16:07:30.000Z' WHERE head_seq = 42`);
+
+    const stored = await latestAnchor(authoritative.pool);
+    const { verdict: _v, ...asStored } = stored!;
+    assert.equal(verifyAnchor(asStored as AnchorDocument, root.raw), false, 'the fixture must be genuinely broken');
+
+    // Re-publishing the same head with a document that DOES verify replaces it.
+    const outcome = await recordAnchor(authoritative.pool, good, undefined, {
+      verifyStored: (s) => verifyAnchor(s, root.raw),
+    });
+    assert.equal(outcome.recorded, true);
+    assert.equal(outcome.recorded === true && outcome.superseded, true);
+
+    const after = await latestAnchor(authoritative.pool);
+    const { verdict: _v2, ...asServed } = after!;
+    assert.equal(after!.at, at, 'the replaced row carries the signed `at`, not a database rendering of it');
+    assert.equal(verifyAnchor(asServed as AnchorDocument, root.raw), true);
+  });
+
+  test('a verifiable stored anchor is left alone — no needless rewriting', async () => {
+    const outcome = await recordAnchor(
+      authoritative.pool,
+      { ...(await latestAnchor(authoritative.pool))! } as AnchorDocument,
+      undefined,
+      { verifyStored: (s) => verifyAnchor(s, root.raw) },
+    );
+    assert.deepEqual(outcome, { recorded: true, already: true });
+  });
+
+  test('a DIFFERENT head for the same sequence is still a contradiction, not a supersede', async () => {
+    const other = anchor(root.priv, { head_seq: 42, head_event_hash: 'd'.repeat(64) });
+    const outcome = await recordAnchor(authoritative.pool, other, undefined, {
+      verifyStored: (s) => verifyAnchor(s, root.raw),
+    });
+    assert.equal(outcome.recorded, false);
+    assert.equal(outcome.recorded === false && outcome.code, 'contradiction');
+  });
+});
