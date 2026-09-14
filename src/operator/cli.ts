@@ -41,7 +41,7 @@ import { record } from '../audit.ts';
 import { list, mint, revoke } from '../credentials/store.ts';
 import { transferTlp } from '../part-one/transfer.ts';
 import { custodyGaps, withholdTlp } from '../part-one/withhold.ts';
-import { addKey, recordAnchor } from '../distribution/anchor-store.ts';
+import { addKey, latestAnchor, recordAnchor } from '../distribution/anchor-store.ts';
 import { keyIsTrusted, verifyAnchor, type AnchorDocument } from '../distribution/anchor.ts';
 import { keyList } from '../distribution/anchor-store.ts';
 import { renameOrganization } from '../part-one/organization.ts';
@@ -349,7 +349,27 @@ async function main(): Promise<void> {
       const key = keys.find((k) => k.key_id === document.key_id);
       if (!key) return { refused: `no such anchor key "${document.key_id}" — register it first with \`anchor trust\`` };
       if (!verifyAnchor(document, key.public_key)) return { refused: 'the signature does not verify against that key' };
-      return recordAnchor(db, document);
+
+      const outcome = await recordAnchor(db, document);
+
+      // Verify what will be SERVED, not what arrived. The first anchor this
+      // Registry published verified in memory and failed as served, because
+      // `at` went through a timestamptz and came back with milliseconds it
+      // was not signed with. A Registry must not serve an anchor it cannot
+      // itself verify, so the round trip is checked here and the transaction
+      // rolls back if the bytes moved.
+      if (outcome.recorded) {
+        const served = await latestAnchor(db);
+        if (!served) throw new Error('the anchor was recorded but cannot be read back');
+        const { verdict: _verdict, ...document2 } = served;
+        if (!verifyAnchor(document2 as AnchorDocument, key.public_key)) {
+          throw new Error(
+            'the anchor verifies as received but NOT as it would be served — the stored form differs from the signed bytes. ' +
+              'Nothing was published.',
+          );
+        }
+      }
+      return outcome;
     });
 
     if ('refused' in outcome) {

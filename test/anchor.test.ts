@@ -80,8 +80,12 @@ const ROOT_KEY: AnchorKey = {
 
 describe('the signed document (§20.2)', () => {
   test('canonical bytes are fixed, and do not depend on key order', () => {
-    const a = canonicalAnchor(fields());
-    const reordered = { key_id: ROOT_ID, at: fields().at, head_event_hash: 'aaaa', head_seq: 5, origin: ORIGIN, journal_format: 1 };
+    // One fixture, read twice: calling fields() twice takes two clock
+    // readings, and a test that fails when the millisecond ticks is a test
+    // nobody will trust.
+    const base = fields();
+    const a = canonicalAnchor(base);
+    const reordered = { key_id: base.key_id, at: base.at, head_event_hash: base.head_event_hash, head_seq: base.head_seq, origin: base.origin, journal_format: base.journal_format };
     assert.equal(canonicalAnchor(reordered as AnchorFields).toString(), a.toString());
     assert.match(a.toString(), /^\{"journal_format":1,"origin":/);
   });
@@ -329,5 +333,48 @@ describe('freshness (§20.2)', () => {
     const old = { at: new Date(Date.now() - 30 * 86_400_000).toISOString() };
     assert.ok(ageSeconds(old) > 29 * 86_400);
     assert.equal(ageSeconds({ at: new Date().toISOString() }) < 5, true);
+  });
+});
+
+describe('what is served is what was signed (§20.2)', () => {
+  // The bug this exists to prevent, found on the first real anchor: the
+  // signer emitted `at` without milliseconds, the timestamptz column gave
+  // them back, and the signature that verified in memory failed against the
+  // document the Registry served. Both halves were tested; the round trip
+  // between them was not.
+  test('an anchor whose `at` has no milliseconds verifies AS SERVED', async () => {
+    const at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+    assert.ok(!at.includes('.'), 'the fixture must carry the shape that broke');
+
+    // Deterministic ordering: /.well-known/cp-anchor serves the newest, and
+    // the anchors above were signed in the same second.
+    await authoritative.pool.query(`DELETE FROM anchor`);
+
+    const { rows } = await authoritative.pool.query<{ seq: string; event_hash: string }>(
+      `SELECT seq::text, event_hash FROM audit_event ORDER BY seq DESC LIMIT 1`,
+    );
+    const head = rows[0]!;
+    const document = anchor(root.priv, { head_seq: Number(head.seq) - 1, head_event_hash: head.event_hash, at });
+    assert.equal(verifyAnchor(document, root.raw), true, 'sanity: it verifies before storage');
+
+    await recordAnchor(authoritative.pool, document);
+
+    const response = await app.inject({ method: 'GET', url: '/.well-known/cp-anchor' });
+    const served = response.json() as AnchorDocument & { age_seconds: number };
+    assert.equal(served.at, at, 'the served `at` is the signed `at`, byte for byte');
+
+    const { age_seconds: _age, ...asServed } = served;
+    assert.equal(verifyAnchor(asServed as AnchorDocument, root.raw), true, 'the served document verifies');
+  });
+
+  test('every column the signature covers survives the round trip unchanged', async () => {
+    const response = await app.inject({ method: 'GET', url: '/.well-known/cp-anchor' });
+    const served = response.json();
+    const { rows } = await authoritative.pool.query<{ at_text: string; head_event_hash: string; signature: string }>(
+      `SELECT at_text, head_event_hash, signature FROM anchor ORDER BY signed_at DESC, head_seq DESC LIMIT 1`,
+    );
+    assert.equal(served.at, rows[0]!.at_text);
+    assert.equal(served.head_event_hash, rows[0]!.head_event_hash);
+    assert.equal(served.signature, rows[0]!.signature);
   });
 });

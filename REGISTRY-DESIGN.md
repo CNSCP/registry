@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.14 · 14 September 2026
+**Status:** Draft v0.15 · 14 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, clean reading copy §1–§10, assembled **8 September 2026** from the canon working drafts at that date — §1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, because the 2026 revision is still in draft and not yet public.** This design is written against one identifiable artifact:
@@ -23,6 +23,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.15 (14 September, same day): what is served is what was signed.** The first published anchor verified on arrival and failed as served — `at` lost its milliseconds to a `timestamptz` round trip. Migration 13 stores the signed `at` verbatim, `anchor publish` verifies the stored form before committing, and the test now goes through the database and the route rather than checking the cryptography and the storage separately.
 >
 > **v0.14 closes the last unmet row of the conformance checklist (14 September).** New §20.2: the signed anchor, as built. Six fields and an Ed25519 signature over a canonical serialization; the private key lives on the operator's machine and nothing in the Registry can read one. Weekly, and after anything irreversible. Served at `/.well-known/cp-anchor` beside a key list at `/.well-known/cp-keys`, and mirrored where the Registry cannot reach it. A follower compares against the entries it verified for itself and stops on divergence; `verify-journal --anchor` does the same from a laptop. Rotation by a vouched key list, with the first key's fingerprint published to be checked by eye. §25 Q12 closed.
 >
@@ -1015,6 +1017,8 @@ fingerprint 463f 5b19 07b9 4d22 569a 5710 a1ae 2525 eaf4 a23e 2bf6 52fa 4c94 10a
 If an anchor you are handed names a key whose fingerprint is not this one, and is not vouched for by a chain leading back to it, it is not this Registry's anchor whatever it says in its `origin` field.
 
 **Rotation.** `anchor_key` (migration 12) holds each key's id, public key, validity dates, and — for every key after the first — the predecessor's signature over its canonical form, served at `GET /.well-known/cp-keys`. `keyIsTrusted()` walks from the key in question toward a root the verifier already believes in, iteratively, so a cyclic list terminates unvouched rather than looping. The first key is vouched for by nothing in this mechanism; its fingerprint is published in this section, in the README and on cnscp.io, to be checked by eye. That is the honest trust root available to a registry of this size, and naming it as such is better than dressing it up.
+
+**What is served is what was signed.** The first anchor this Registry published verified when it was received and failed as it was served: the signer wrote `at` without milliseconds, the `timestamptz` column gave them back, and the canonical bytes moved. The signature was never wrong; the stored form was. So the `at` field is stored verbatim in `anchor.at_text` (migration 13) and served from there — `signed_at` remains only for ordering and `age_seconds` — and `anchor publish` re-reads what it just wrote and verifies THAT before the transaction commits. *A Registry must not serve an anchor it cannot itself verify.* The lesson generalizes past this field: anything a verifier hashes is stored as the bytes that were signed, never as a value the database is free to re-format.
 
 **One anchor per head per key, and contradictions are kept.** `recordAnchor` refuses a *second, different* head signed for the same sequence under the same key rather than storing it quietly — two signatures over one sequence is the fork made visible, and it must reach a person rather than a table.
 

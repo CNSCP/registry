@@ -45,13 +45,13 @@ export async function latestAnchor(db: Queryable): Promise<(AnchorDocument & { v
   const { rows } = await db.query<{
     head_seq: string;
     head_event_hash: string;
-    signed_at: Date;
+    at_text: string;
     key_id: string;
     signature: string;
     origin: string;
     verdict: string | null;
   }>(
-    `SELECT head_seq::text, head_event_hash, signed_at, key_id, signature, origin, verdict
+    `SELECT head_seq::text, head_event_hash, at_text, key_id, signature, origin, verdict
        FROM anchor ORDER BY signed_at DESC, head_seq DESC LIMIT 1`,
   );
   const row = rows[0];
@@ -61,7 +61,8 @@ export async function latestAnchor(db: Queryable): Promise<(AnchorDocument & { v
     origin: row.origin,
     head_seq: Number(row.head_seq),
     head_event_hash: row.head_event_hash,
-    at: row.signed_at.toISOString(),
+    // Verbatim, never re-formatted: the signature covers these bytes.
+    at: row.at_text,
     key_id: row.key_id,
     signature: row.signature,
     verdict: row.verdict,
@@ -101,11 +102,12 @@ export async function recordAnchor(
   }
 
   await db.query(
-    `INSERT INTO anchor (head_seq, head_event_hash, signed_at, key_id, signature, origin, verdict, verdict_detail, checked_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE now() END)`,
+    `INSERT INTO anchor (head_seq, head_event_hash, signed_at, at_text, key_id, signature, origin, verdict, verdict_detail, checked_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $8::text IS NULL THEN NULL ELSE now() END)`,
     [
       document.head_seq,
       document.head_event_hash,
+      document.at,
       document.at,
       document.key_id,
       document.signature,
@@ -142,6 +144,6 @@ export function anchorForStatus(
   return {
     ...rest,
     age_seconds: ageSeconds(document, now),
-    ...(verdict === undefined ? {} : { verified: verdict }),
+    ...(verdict ? { verified: verdict } : {}),
   };
 }
