@@ -81,13 +81,16 @@ Part Two authoring ([`src/part-two/`](src/part-two/)) — §15, the Phase 0 publ
 The MCP server ([`src/mcp/server.ts`](src/mcp/server.ts)) — §15.1's "worth building early",
 since hand-authoring by an assistant is the Phase 0 publication path:
 
-- Nine tools — the authoring verbs plus the operator act — run with `npm run mcp` (stdio); configure with
+- Ten tools — the authoring verbs, `lint_profile`, and the operator act — run with `npm run mcp` (stdio); configure with
   `CP_REGISTRY_URL` and `CP_REGISTRY_TOKEN` — the token's scopes decide what the tools may do
 - Deliberately THIN: an HTTP client of the same API every other client uses (§4.4 — no
   privileged path), so every gate and audit write happens exactly once
 - Registry refusals pass through verbatim as structured findings; `publish` says IRREVERSIBLE
   in its description, and the working document lives with the assistant — check_publishable
   and publish carry it as a parameter, per the 8 Sept revision
+- `lint_profile` (§16.1) is advice, not a gate: severities `refusal · warning · note`, findings
+  that are also refusal grounds marked `gate`, and a permanence note naming every newly added
+  Property. The same findings ride along with `check_publishable`
 - `npm run authoritative` starts the combined authoring+resolution host it talks to
 
 Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, every read keeps working

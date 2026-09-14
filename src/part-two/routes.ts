@@ -36,6 +36,7 @@ import { allocateTlp, checkAllocatable } from '../part-one/allocate.ts';
 import { authorizes } from '../part-one/authorizes.ts';
 import type { OwnershipStore } from '../part-one/types.ts';
 import { checkAdditivityAgainstAll } from '../profile/additivity.ts';
+import { lint, tally } from '../profile/lint.ts';
 import { missingHeaderFields, duplicatePropertyNames } from '../profile/conformance.ts';
 import type { Profile, ProfileVersion } from '../profile/model.ts';
 import { parseProfileVersion } from '../profile/spec2026.ts';
@@ -468,6 +469,61 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
   // either frozen or refused with nothing retained. The author's workspace is
   // the author's own; the Registry sees content only at this moment.
 
+  /** Every published version under a name, parsed — additivity and lint share it. */
+  async function priorVersions(name: string): Promise<{ version: number; content: ProfileVersion }[]> {
+    const { rows } = await pool.query<{ version: number; content: unknown }>(
+      `SELECT v.version, v.content FROM profile_version v JOIN profile p ON p.id = v.profile_id
+        WHERE p.name = $1 ORDER BY v.version`,
+      [name],
+    );
+    return rows.map((r) => ({ version: r.version, content: parseProfileVersion(r.content as never).versions![0]! }));
+  }
+
+  // --- POST /<name>/lint (§16). Advisory, and never a refusal ground. ------
+  //
+  // The one surface with no side effect whatsoever: it reads the candidate and
+  // the versions already published under the name, and writes nothing. Guarded
+  // by `register` — the same scope a rehearsal needs — because looking is not
+  // acting, but an unauthenticated endpoint that accepts arbitrary documents
+  // is a compute cost anyone could impose on a Registry with no rate limiting.
+  // Ruled 14 Sept 2026 (Anto): register now, public later, deliberately.
+
+  app.post<{ Params: { ref: string }; Body: unknown }>('/:ref/lint', async (request, reply) => {
+    const authed = await requireScope(request, reply, 'register');
+    if (!authed) return;
+
+    const { name, version } = splitReference(request.params.ref);
+    if (version !== null || nameProblem(name)) {
+      return structuredError(reply, 400, 'grammar.name', 'grammar', 'Lint addresses the name, not a version.');
+    }
+
+    const body = request.body;
+    if (body === undefined || body === null || typeof body !== 'object') {
+      return structuredError(reply, 400, 'lint.payload_required', 'shape',
+        'Lint reads the candidate document: send the full 2026-shape document as the request body.');
+    }
+
+    let profile: Profile;
+    try {
+      profile = parseProfileVersion(body as never, name);
+    } catch (error) {
+      // A document the parser cannot read cannot be linted, and saying so is
+      // the most useful finding available.
+      return structuredError(reply, 422, 'lint.malformed', 'shape', (error as Error).message);
+    }
+
+    const priors = await priorVersions(name);
+    const findings = lint(profile, { priors });
+
+    return reply.code(200).send({
+      name,
+      lint: { findings, tally: tally(findings) },
+      advisory: true,
+      message:
+        'Lint is advisory (§16). Findings marked `gate` are also publication refusal grounds; the rest change nothing about whether this document publishes.',
+    });
+  });
+
   app.post<{ Params: { ref: string }; Querystring: { dry_run?: string }; Body: unknown }>(
     '/:ref/publish',
     async (request, reply) => {
@@ -541,19 +597,11 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
       }
 
       // Additivity, against EVERY prior published version (spec §6.2).
-      const priors = await pool.query<{ version: number; content: unknown }>(
-        `SELECT v.version, v.content FROM profile_version v JOIN profile p ON p.id = v.profile_id
-          WHERE p.name = $1 ORDER BY v.version`,
-        [name],
-      );
-      const priorContents = priors.rows.map((r) => ({
-        version: r.version,
-        content: parseProfileVersion(r.content as never).versions![0]!,
-      }));
+      const priorContents = await priorVersions(name);
       const result = checkAdditivityAgainstAll(content, priorContents);
       findings.push(...result.findings);
 
-      const highestPrior = priors.rows.at(-1)?.version ?? 0;
+      const highestPrior = priorContents.at(-1)?.version ?? 0;
       const dryRun = request.query.dry_run === 'true';
 
       if (findings.length > 0) {
@@ -566,9 +614,13 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
 
       if (dryRun) {
         // Every gate has run; nothing is written. §23 priority 7 proves it.
+        // A rehearsal answers both questions at once — would this be refused,
+        // and is it a good idea — so the author need not know to ask twice.
+        const advisory = lint(profile, { priors: priorContents });
         return reply.code(200).send({
           publishable: true, dry_run: true, name,
           would_assign_version: highestPrior + 1,
+          lint: { findings: advisory, tally: tally(advisory) },
           message: 'The document would publish. Nothing has changed, and nothing was retained.',
         });
       }

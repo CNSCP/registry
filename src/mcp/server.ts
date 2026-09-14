@@ -144,6 +144,30 @@ const DOCUMENT_SHAPE =
   '(spec §7.3), so keep the document in your own files between calls.';
 
 server.registerTool(
+  'lint_profile',
+  {
+    title: 'Contract lint — advice before the gate, changes nothing',
+    description:
+      'Reads a candidate document and reports what is wrong with it AS A CONTRACT, which is a ' +
+      'different question from whether the Registry will accept it. Findings carry a severity: ' +
+      '"refusal" means publication would be refused on this ground and the finding also carries ' +
+      'gate: true; "warning" means probably a mistake; "note" means worth knowing. The Registry ' +
+      'refuses on none of the warnings or notes — lint is advisory (§16) and never adds a refusal ' +
+      'ground. Two checks matter most when a document is being generated rather than deliberated: ' +
+      'a Property whose name encodes a direction (the supplying role is already structural), and ' +
+      'the permanence note, which names every newly added Property — once published under this ' +
+      'name a Property can never be removed or redefined, in this version or any later one. ' +
+      'Lint first, revise, lint again, then check_publishable. ' +
+      DOCUMENT_SHAPE,
+    inputSchema: {
+      name: z.string(),
+      document: z.record(z.string(), z.unknown()).describe('The full document to lint'),
+    },
+  },
+  async ({ name, document }) => call('POST', `/${name}/lint`, document),
+);
+
+server.registerTool(
   'check_publishable',
   {
     title: 'Dry-run publication — every gate, no changes',

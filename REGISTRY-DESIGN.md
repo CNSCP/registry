@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.12 · 14 September 2026
+**Status:** Draft v0.13 · 14 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, clean reading copy §1–§10, assembled **8 September 2026** from the canon working drafts at that date — §1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, because the 2026 revision is still in draft and not yet public.** This design is written against one identifiable artifact:
@@ -23,6 +23,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.13 builds the lint §16 has described since v0.1 (14 September).** New §16.1: lint is a function of one document and its published priors, touching no credential, so an author with no authority yet can still be told what is wrong; it never refuses, and the two checks that report a real refusal ground carry `gate: true` beside the advisory ones. Findings, not a score. `POST /<name>/lint` at `register` scope (ruled: public later, deliberately), `lint_profile` in the MCP server, and the findings attached to `?dry_run=true`. The Propagate row is withdrawn — the 2026 parser already refuses a Property that omits it.
 >
 > **v0.12 makes "held by the operator" true of the table, not just the prose (14 September).** §3.2 gains the `allocation withhold` act: custody of an infrastructure or path-shadowing Prefix by the operator organization, no evidence flag because the policy entry is the evidence, public in the journal because followers exist now in a way they did not at bootstrap. `account` and `auth` were withheld in policy on the 13th and had no allocation row on canon; `custodyGaps()` and `test/withhold.test.ts` are what would have caught that the same hour. `deploy/RELEASING.md` records the nightly backup, how to restore one, and what `audit_chain_verify` proves about a restore.
 >
@@ -765,12 +767,43 @@ Runs on demand, and at publication when the owner's policy asks for it. Never a 
 |---|---|
 | Header completeness | All REQUIRED fields present (spec §6.6) — this one *is* a Registry gate; listed because the editor surfaces it inline |
 | Property naming | Purpose-named; flags direction prefixes (`in_`, `out_`, `server_`, `client_`, `tx`/`rx`, `send`/`recv`) — the supplying role is structural, so encoding it in a name is redundant and misleading |
-| Propagate deliberate | Every Property's Propagate explicitly chosen; the editor requires a decision rather than defaulting. Prompts the spec §6.4 question: is this value state every counterpart may observe (broadcast), or meaningful to one at a time (addressed)? |
+| ~~Propagate deliberate~~ | *Withdrawn 14 Sept 2026 (§16.1): the 2026 parser refuses a Property whose Propagate is absent or is anything but `"yes"`/`"no"`, so the decision is already compulsory and the check could never fire.* |
 | Non-capture | No Header or Property text conditions enactment on a named Governor or Realm (spec §5.3), and no realm policy embedded (spec §6.7) — both are conformance requirements for a Profile (spec §9.4) |
 | Additivity preview | Diffs the candidate document against every published version and reports what would be rejected, before the author publishes — this is what `?dry_run=true` already does at the gate |
 | Permanence warning | Flags newly added Properties: once published under this name they can never be removed (spec §6.2 NOTE) |
 
 There is deliberately no "mode" check: the specification defines no mode field, and the 8 Sept revision removed the direct-route concept altogether — everything a Connection carries passes through the Realm (spec Appendix B.2), so there is nothing for a marking to distinguish.
+
+### 16.1 As built (Phase 1, 14 September 2026)
+
+The table above says what lint checks. This says what lint *is*, which the table left open in three places: what it runs on, what it returns, and what — if anything — it may stop.
+
+**It is a function of one document.** `lint(profile, { priors })` takes the candidate and, where a check needs it, the versions already published under that name. It touches no credential, no membership and no allocation, so it can answer for an author who has no authority yet — which is the property that makes it the front door rather than a late gate. *A refusal an author can only discover by attempting the irreversible act is not a guardrail; it is a trap.*
+
+**It never refuses.** Publication has exactly the grounds §14 and spec §9.3 name, and lint adds none: a document with twelve findings publishes if it is conformant, and a document with none is refused if it is not additive. Two checks report what the gate will do anyway — header completeness and additivity — and those carry `gate: true`, so one list shows both what will be refused and what is merely unwise. The test suite asserts the separation in both directions, because a lint that can refuse is house style with a gate, and a registry that imposes house style has stopped being a substrate.
+
+**Findings, not a score.** Each carries `check` (a stable id), `severity` (`refusal · warning · note`), `where` (a path: `Header.Owner`, `Properties[3].Name`), `message`, `spec` (the clause it rests on), and `gate` where it is also a refusal ground. There is no total and no "lint passed": a count invites clearing the count, and the findings are meant to be read. `tally()` exists for a caller that wants one line, and is documented as not being a score.
+
+| Check | Severity | Rests on |
+|---|---|---|
+| `header.incomplete` | refusal · gate | §6.6 — Version, Pub Date and Status are exempt; the Registry assigns them at publication |
+| `profile.malformed` | refusal · gate | §7.2, §9.4 — the name, a reserved Prefix, no Properties |
+| `property.duplicate` | refusal · gate | §6.4 — Properties and Channels share one name space |
+| `version.additivity` | refusal · gate | §6.2 — the same function the publish gate calls, so the preview cannot drift from the gate |
+| `property.direction-prefix` | warning | §6.3 — the supplying role is structural; a name that encodes direction is redundant where it agrees and misleading where it does not |
+| `profile.non-capture` | warning | §5.3, §6.7 — Header or Property text conditioning enactment on a named Governor or Realm |
+| `channel.performance-claim` | warning | §6.5 — latency and throughput are properties of a deployment, not terms of a contract |
+| `version.permanence` | note | §6.2 NOTE — every newly added Property, named |
+
+**The permanence note earns its place.** It fires on every addition, not only suspicious ones, because the point is the pause rather than the detection: a person reads spec §6.2's NOTE once and remembers it, and a machine generating twenty Properties does not. On a first version it says so plainly — every Property in it is permanent from publication.
+
+**Propagate is not checked, and the table's row for it is withdrawn.** §16 asked that every Property's Propagate be explicitly chosen rather than defaulted. In the 2026 shape it cannot be defaulted: `parseYesNo` refuses a document whose Property omits it, or carries anything other than `"yes"` or `"no"`. The requirement is met by the parser, and a lint check for it could never fire.
+
+**Where it appears.** `POST /<name>/lint`, guarded by `register` — the same scope a rehearsal needs. `lint_profile` in the MCP server, which is the surface that matters most: an agent that lints, reads, revises and re-lints is the working pattern §16 was written for. And the findings ride along with `?dry_run=true`, so a rehearsal answers both questions at once — *would this be refused* and *is this a good idea* — without the author having to know to ask twice.
+
+*Ruled 14 Sept 2026 (Anto):* `register` scope now, public later and deliberately. A public lint endpoint would let anyone evaluating CNS/CP try the Registry without being onboarded, which is worth having; it would also be an unauthenticated endpoint accepting arbitrary document bodies on a Registry with no rate limiting anywhere. Opening it later is available; closing it again is not.
+
+**What lint does not do.** It does not check spelling, style, or the shape of a Description, and it does not know what a good Profile looks like. Every check above cites a clause of the specification or an irreversibility in this Registry. A check that can cite neither does not belong in the list.
 
 ---
 
@@ -1050,7 +1083,7 @@ Section renumbering in the spec: Header §6.4→§6.6, worked example §6.6→§
 | Phase | Delivers |
 |---|---|
 | **0 — Store as canon** *(next few weeks)* | Import the 70 records from `cp.padi.io` under the §10.2 rulings; stand up Part Three resolution at `cp.cnscp.io` in both representations; minimal Part Two authoring against the Part One spine (§10.3) — API-first and assistant-drivable from the start (§15.1), since hand-authoring by an assistant is the intended publication path in this phase — so Arete gateway and widget work is unblocked. Two disciplines from day one: published content is write-once, and every write is audited. Git-backed storage is a credible v0 — the repo is the audit chain and later becomes the seed data. |
-| **1 — Conforming Registry** *(opened 11 Sept 2026)* | Parts Two and Three in full against the §22 checklist: registration with authorization, ~~Draft with the disclosure trapdoor~~ *(withdrawn by the 8 Sept revision, §24.5)*, publication with integer versions and additivity, per-version deprecation, **distribution feed and local instances (§20.1 — built first)**, audit chain. **Self-service identity (§15.3 — built 12 Sept): people sign in with Google or GitHub and mint their own tokens; the operator's act per author is one `member add`.** Still open in this phase: the signed anchor, the §16 lint, the first outside author's first publication, and Q10. |
+| **1 — Conforming Registry** *(opened 11 Sept 2026)* | Parts Two and Three in full against the §22 checklist: registration with authorization, ~~Draft with the disclosure trapdoor~~ *(withdrawn by the 8 Sept revision, §24.5)*, publication with integer versions and additivity, per-version deprecation, **distribution feed and local instances (§20.1 — built first)**, audit chain. **Self-service identity (§15.3 — built 12 Sept): people sign in with Google or GitHub and mint their own tokens; the operator's act per author is one `member add`.** **Contract lint (§16.1 — built 14 Sept): advisory, never a refusal ground, on the API, in the MCP server and attached to every rehearsal.** Still open in this phase: the signed anchor, the first outside author's first publication, and Q10. |
 | **2 — Allocation** | Part One for real: organization verification, Prefix application and allocation, renewal and redemption, authorization scopes, voluntary transfers, management UI. The stub retires. |
 | **3 — Trust and disputes** | Dispute workflow, forced transfers, restricted-Prefix review, verification levels, published transparency record of allocation decisions. |
 | **4 — Ecosystem** | CI publishing tokens and a GitHub Action, owner-configurable publication policy, lint as a standalone tool authors can run before registering. |

@@ -110,8 +110,8 @@ describe('the toolset', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
-      'allocate_tlp', 'check_publishable', 'check_registration', 'deprecate', 'publish',
-      'register_name', 'release_name', 'resolve', 'update_stewardship',
+      'allocate_tlp', 'check_publishable', 'check_registration', 'deprecate', 'lint_profile',
+      'publish', 'register_name', 'release_name', 'resolve', 'update_stewardship',
     ]);
   });
 
@@ -127,6 +127,10 @@ describe('the toolset', () => {
     // descriptions — the assistant's documentation — must say so.
     assert.match(byName['check_publishable']!.description ?? '', /Registry holds no unpublished content/);
     assert.match(byName['register_name']!.description ?? '', /holds no unpublished\s+content|working document stays with you/);
+    // Lint must announce that it is advice, or an agent will treat a clean
+    // lint as permission and a warning as a refusal (§16.1).
+    assert.match(byName['lint_profile']!.description ?? '', /advisory|never adds a refusal ground/);
+    assert.match(byName['lint_profile']!.description ?? '', /can never be removed or redefined/);
   });
 });
 
