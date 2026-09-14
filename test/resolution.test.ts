@@ -253,7 +253,7 @@ describe('the caching split (§18)', () => {
     assert.equal(html.statusCode, 200);
     // Website is a pointer (spec §6.6 NOTE): followable, http(s) only, and
     // still shown as its text.
-    assert.match(html.body, /<a href="https:\/\/padi\.io" rel="noopener nofollow">https:\/\/padi\.io<\/a>/);
+    assert.match(html.body, /<a href="https:\/\/padi\.io" target="_blank" rel="noopener noreferrer nofollow">https:\/\/padi\.io<\/a>/);
     // "Provider (Equipment)" / "Consumer (Thermostat)": the role, and the
     // party the Header names for it, so the table reads as who supplies what.
     assert.match(html.body, /<h3>Provider \(Equipment\)<\/h3>/);

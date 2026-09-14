@@ -297,3 +297,39 @@ describe('configuration', () => {
     assert.throws(() => identityConfigFromEnv({ ...all, CP_SESSION_SECRET: 'short' }), /32 characters/);
   });
 });
+
+describe('when something goes wrong', () => {
+  test('an unexpected failure answers with the site\'s own page, not Fastify JSON — and says nothing was changed', async () => {
+    // A pool that refuses everything: the shape of the 500 the first sign-in
+    // met on canon (the table was not yet migrated).
+    const broken = {
+      query: async () => { throw new Error('relation "user_identity" does not exist'); },
+      connect: async () => { throw new Error('relation "user_identity" does not exist'); },
+    } as unknown as pg.Pool;
+    const app2 = Fastify();
+    await registerIdentityRoutes(app2, { pool: broken, config: { publicOrigin: 'https://cp.test', sessionSecret: SECRET, providers: [google] } });
+    await app2.ready();
+    try {
+      const j2 = jar();
+      const start = await app2.inject({ method: 'GET', url: '/auth/google' });
+      j2.absorb(start);
+      const state = new URL(start.headers['location'] as string).searchParams.get('state')!;
+      const res = await app2.inject({ method: 'GET', url: `/auth/google/callback?code=c&state=${state}`, headers: j2.header() });
+      assert.equal(res.statusCode, 500);
+      assert.match(String(res.headers['content-type']), /text\/html/);
+      assert.equal(res.headers['cache-control'], 'no-store');
+      assert.match(res.body, /Something went wrong/);
+      assert.match(res.body, /Nothing was changed/);
+      assert.doesNotMatch(res.body, /user_identity|statusCode|42P01/, 'no internals on the page');
+    } finally {
+      await app2.close();
+    }
+  });
+
+  test('the authoring API is untouched: its refusals are still structured JSON', async () => {
+    const res = await app.inject({ method: 'PUT', url: '/padi.no-token' });
+    assert.equal(res.statusCode, 401);
+    assert.match(String(res.headers['content-type']), /application\/json/);
+    assert.equal(res.json().kind, 'registry-refusal');
+  });
+});

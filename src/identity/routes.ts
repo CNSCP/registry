@@ -146,191 +146,210 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
   const providers = new Map(config.providers.map((p) => [p.name, p]));
   enableAccountNav();
 
-  // Forms post as application/x-www-form-urlencoded; nothing else in the
-  // Registry does, so the parser lives here.
-  if (!app.hasContentTypeParser('application/x-www-form-urlencoded')) {
-    app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
-      const params = new URLSearchParams(body as string);
-      const out: Record<string, string | string[]> = {};
-      for (const [k, v] of params) {
-        const prev = out[k];
-        out[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
-      }
-      done(null, out);
+  // These routes are opened by a person in a browser, so an unexpected
+  // failure should look like the rest of the site, not like Fastify's JSON.
+  // The handler is scoped to this plugin: the authoring API keeps its
+  // structured JSON refusals, which machine authors parse (§15.1).
+  await app.register(async (scope) => {
+    scope.setErrorHandler((error, request, reply) => {
+      request.log.error({ err: error }, 'identity: unhandled failure');
+      const code = (error as { statusCode?: unknown }).statusCode;
+      const status = typeof code === 'number' && code >= 400 && code < 500 ? code : 500;
+      return noStore(reply)
+        .code(status)
+        .type('text/html; charset=utf-8')
+        .send(page('Something went wrong', `<h1>Something went wrong</h1>
+<p>The Registry could not finish that request. Nothing was changed: each of these acts is one transaction, and a failure rolls it back.</p>
+<p>Try again, and if it keeps happening write to <a href="mailto:info@cnscp.io">info@cnscp.io</a> saying what you were doing.</p>
+<p><a class="btn btn-primary" href="/account">Back to your account</a></p>`, 'account'));
     });
-  }
 
-  const noStore = (reply: FastifyReply) => reply.header('cache-control', 'no-store');
-  const redirectUri = (provider: ProviderName) => `${config.publicOrigin}/auth/${provider}/callback`;
-
-  const html = (reply: FastifyReply, status: number, title: string, body: string, active: 'account' | null = 'account') =>
-    noStore(reply).code(status).type('text/html; charset=utf-8').send(page(title, body, active));
-
-  /** The signed-in user for this request, or null. Touches the session. */
-  async function currentSession(request: FastifyRequest): Promise<{ sessionId: string; rowId: string; userId: string } | null> {
-    const id = verifySessionCookie(cookies(request)[SESSION_COOKIE], config.sessionSecret);
-    if (!id) return null;
-    const session = await findSession(pool, id, now());
-    if (!session) return null;
-    await touchSession(pool, session.rowId, now());
-    return { sessionId: id, rowId: session.rowId, userId: session.userId };
-  }
-
-  function providerOr404(reply: FastifyReply, name: string): Provider | null {
-    const p = (PROVIDERS as readonly string[]).includes(name) ? providers.get(name as ProviderName) : undefined;
-    if (!p) {
-      html(reply, 404, 'No such sign-in', `<h1>No such sign-in</h1><p>The Registry signs people in with ${[...providers.keys()].join(' and ')}.</p>`, null);
-      return null;
+    // Forms post as application/x-www-form-urlencoded; nothing else in the
+    // Registry does, so the parser lives here.
+    if (!scope.hasContentTypeParser('application/x-www-form-urlencoded')) {
+      scope.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, body, done) => {
+        const params = new URLSearchParams(body as string);
+        const out: Record<string, string | string[]> = {};
+        for (const [k, v] of params) {
+          const prev = out[k];
+          out[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
+        }
+        done(null, out);
+      });
     }
-    return p;
-  }
 
-  // --- sign in -------------------------------------------------------------
+    const noStore = (reply: FastifyReply) => reply.header('cache-control', 'no-store');
+    const redirectUri = (provider: ProviderName) => `${config.publicOrigin}/auth/${provider}/callback`;
 
-  app.get<{ Params: { provider: string } }>('/auth/:provider', async (request, reply) => {
-    const provider = providerOr404(reply, request.params.provider);
-    if (!provider) return;
-    const started = provider.start(redirectUri(provider.name));
-    setCookie(reply, AUTH_COOKIE, sealed({ provider: provider.name, state: started.state, codeVerifier: started.codeVerifier, nonce: started.nonce }, config.sessionSecret), {
-      path: '/auth', maxAge: AUTH_COOKIE_TTL_S, secure,
-    });
-    return noStore(reply).redirect(started.url, 302);
-  });
+    const html = (reply: FastifyReply, status: number, title: string, body: string, active: 'account' | null = 'account') =>
+      noStore(reply).code(status).type('text/html; charset=utf-8').send(page(title, body, active));
 
-  app.get<{ Params: { provider: string }; Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
-    '/auth/:provider/callback',
-    async (request, reply) => {
+    /** The signed-in user for this request, or null. Touches the session. */
+    async function currentSession(request: FastifyRequest): Promise<{ sessionId: string; rowId: string; userId: string } | null> {
+      const id = verifySessionCookie(cookies(request)[SESSION_COOKIE], config.sessionSecret);
+      if (!id) return null;
+      const session = await findSession(pool, id, now());
+      if (!session) return null;
+      await touchSession(pool, session.rowId, now());
+      return { sessionId: id, rowId: session.rowId, userId: session.userId };
+    }
+
+    function providerOr404(reply: FastifyReply, name: string): Provider | null {
+      const p = (PROVIDERS as readonly string[]).includes(name) ? providers.get(name as ProviderName) : undefined;
+      if (!p) {
+        html(reply, 404, 'No such sign-in', `<h1>No such sign-in</h1><p>The Registry signs people in with ${[...providers.keys()].join(' and ')}.</p>`, null);
+        return null;
+      }
+      return p;
+    }
+
+    // --- sign in -------------------------------------------------------------
+
+    scope.get<{ Params: { provider: string } }>('/auth/:provider', async (request, reply) => {
       const provider = providerOr404(reply, request.params.provider);
       if (!provider) return;
-      // Clear the round-trip cookie whatever happens next.
-      setCookie(reply, AUTH_COOKIE, '', { path: '/auth', maxAge: 0, secure });
+      const started = provider.start(redirectUri(provider.name));
+      setCookie(reply, AUTH_COOKIE, sealed({ provider: provider.name, state: started.state, codeVerifier: started.codeVerifier, nonce: started.nonce }, config.sessionSecret), {
+        path: '/auth', maxAge: AUTH_COOKIE_TTL_S, secure,
+      });
+      return noStore(reply).redirect(started.url, 302);
+    });
 
-      if (request.query.error) {
-        return html(reply, 400, 'Sign-in declined', `<h1>Sign-in declined</h1><p>${escape(provider.name)} reported <code>${escape(request.query.error)}</code>${
-          request.query.error_description ? `: ${escape(request.query.error_description)}` : ''}.</p><p><a href="/account">Try again</a></p>`);
-      }
-      const trip = unseal(cookies(request)[AUTH_COOKIE], config.sessionSecret);
-      if (!trip || trip.provider !== provider.name || !request.query.state || trip.state !== request.query.state || !request.query.code) {
-        return html(reply, 400, 'Sign-in did not complete', `<h1>Sign-in did not complete</h1><p>The response from ${escape(provider.name)} did not match the request this browser started (the state is missing, stale, or from a different attempt). Nothing was recorded.</p><p><a href="/account">Start again</a></p>`);
-      }
+    scope.get<{ Params: { provider: string }; Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
+      '/auth/:provider/callback',
+      async (request, reply) => {
+        const provider = providerOr404(reply, request.params.provider);
+        if (!provider) return;
+        // Clear the round-trip cookie whatever happens next.
+        setCookie(reply, AUTH_COOKIE, '', { path: '/auth', maxAge: 0, secure });
 
-      let asserted;
-      try {
-        asserted = await provider.finish(request.query.code, redirectUri(provider.name), { codeVerifier: trip.codeVerifier, nonce: trip.nonce });
-      } catch (e) {
-        request.log.warn({ err: e }, 'identity: provider exchange failed');
-        const msg = e instanceof ProviderError ? e.message : 'the provider could not be reached';
-        return html(reply, 502, 'Sign-in failed', `<h1>Sign-in failed</h1><p>${escape(msg)}. Nothing was recorded.</p><p><a href="/account">Try again</a></p>`);
+        if (request.query.error) {
+          return html(reply, 400, 'Sign-in declined', `<h1>Sign-in declined</h1><p>${escape(provider.name)} reported <code>${escape(request.query.error)}</code>${
+            request.query.error_description ? `: ${escape(request.query.error_description)}` : ''}.</p><p><a href="/account">Try again</a></p>`);
+        }
+        const trip = unseal(cookies(request)[AUTH_COOKIE], config.sessionSecret);
+        if (!trip || trip.provider !== provider.name || !request.query.state || trip.state !== request.query.state || !request.query.code) {
+          return html(reply, 400, 'Sign-in did not complete', `<h1>Sign-in did not complete</h1><p>The response from ${escape(provider.name)} did not match the request this browser started (the state is missing, stale, or from a different attempt). Nothing was recorded.</p><p><a href="/account">Start again</a></p>`);
+        }
+
+        let asserted;
+        try {
+          asserted = await provider.finish(request.query.code, redirectUri(provider.name), { codeVerifier: trip.codeVerifier, nonce: trip.nonce });
+        } catch (e) {
+          request.log.warn({ err: e }, 'identity: provider exchange failed');
+          const msg = e instanceof ProviderError ? e.message : 'the provider could not be reached';
+          return html(reply, 502, 'Sign-in failed', `<h1>Sign-in failed</h1><p>${escape(msg)}. Nothing was recorded.</p><p><a href="/account">Try again</a></p>`);
+        }
+
+        const client = await pool.connect();
+        let userId: string;
+        try {
+          await client.query('BEGIN');
+          const linked = await linkOrCreate(client, asserted);
+          await client.query('COMMIT');
+          userId = linked.userId;
+          request.log.info({ provider: provider.name, outcome: linked.outcome, user: userId }, 'identity: signed in');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          if (e instanceof IdentityRefused) {
+            return html(reply, 403, 'Sign-in refused', `<h1>Sign-in refused</h1><p>${escape(e.message)}</p><p>Nothing was recorded.</p>`);
+          }
+          throw e;
+        } finally {
+          client.release();
+        }
+
+        const session = await createSession(pool, userId, now());
+        setCookie(reply, SESSION_COOKIE, signSessionId(session.id, config.sessionSecret), {
+          path: '/', maxAge: Math.floor((session.expiresAt.getTime() - now().getTime()) / 1000), secure,
+        });
+        return noStore(reply).redirect('/account', 302);
+      },
+    );
+
+    scope.post('/auth/signout', async (request, reply) => {
+      const current = await currentSession(request);
+      if (current) await revokeSession(pool, current.rowId);
+      setCookie(reply, SESSION_COOKIE, '', { path: '/', maxAge: 0, secure });
+      return noStore(reply).redirect('/', 302);
+    });
+
+    // --- the account page ----------------------------------------------------
+
+    scope.get('/account', async (request, reply) => {
+      const current = await currentSession(request);
+      if (!current) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+      const view = await accountView(pool, current.userId);
+      if (!view) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+      return html(reply, 200, 'Account', renderAccount(view, csrfFor(current.sessionId, config.sessionSecret)));
+    });
+
+    type MintForm = { csrf?: string; label?: string; kind?: string; scope?: string | string[] };
+
+    scope.post<{ Body: MintForm }>('/account/credentials', async (request, reply) => {
+      const current = await currentSession(request);
+      if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
+      const body = request.body ?? {};
+      if (body.csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+      }
+      const view = await accountView(pool, current.userId);
+      if (!view) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
+
+      const kind = body.kind === 'agent' || body.kind === 'service' ? body.kind : 'human';
+      const requested = (Array.isArray(body.scope) ? body.scope : body.scope ? [body.scope] : []).map(String);
+      const unknown = requested.filter((s) => !(ACCOUNT_SCOPES as readonly string[]).includes(s));
+      if (unknown.length > 0) {
+        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>Scope${unknown.length > 1 ? 's' : ''} <code>${unknown.map(escape).join('</code>, <code>')}</code> cannot be minted here (§15.3). <a href="/account">Back</a></p>`);
+      }
+      const scopes = ACCOUNT_SCOPES.filter((s) => requested.includes(s));
+      const label = String(body.label ?? '').trim();
+      if (scopes.length === 0 || !label) {
+        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>A credential needs a label and at least one scope. <a href="/account">Back</a></p>`);
       }
 
       const client = await pool.connect();
-      let userId: string;
+      let minted: { token: string; id: string };
       try {
         await client.query('BEGIN');
-        const linked = await linkOrCreate(client, asserted);
+        minted = await mint(client, {
+          userId: current.userId, kind, ...(kind === 'human' ? {} : { principal: view.user.email }), scopes, label,
+          by: view.user.email, byKind: 'human',
+        });
         await client.query('COMMIT');
-        userId = linked.userId;
-        request.log.info({ provider: provider.name, outcome: linked.outcome, user: userId }, 'identity: signed in');
       } catch (e) {
         await client.query('ROLLBACK');
-        if (e instanceof IdentityRefused) {
-          return html(reply, 403, 'Sign-in refused', `<h1>Sign-in refused</h1><p>${escape(e.message)}</p><p>Nothing was recorded.</p>`);
-        }
         throw e;
       } finally {
         client.release();
       }
+      return html(reply, 201, 'Credential minted', renderMinted(minted.token, label, kind, scopes));
+    });
 
-      const session = await createSession(pool, userId, now());
-      setCookie(reply, SESSION_COOKIE, signSessionId(session.id, config.sessionSecret), {
-        path: '/', maxAge: Math.floor((session.expiresAt.getTime() - now().getTime()) / 1000), secure,
-      });
+    scope.post<{ Params: { id: string }; Body: { csrf?: string } }>('/account/credentials/:id/revoke', async (request, reply) => {
+      const current = await currentSession(request);
+      if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
+      if ((request.body ?? {}).csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+      }
+      const view = await accountView(pool, current.userId);
+      const own = view?.credentials.find((c) => c.id === request.params.id);
+      if (!view || !own) {
+        return html(reply, 404, 'No such credential', `<h1>No such credential</h1><p>Only your own credentials appear here. <a href="/account">Back</a></p>`);
+      }
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await revoke(client, own.id, view.user.email, `Revoked by its owner on /account: ${own.label}`, 'human');
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
       return noStore(reply).redirect('/account', 302);
-    },
-  );
-
-  app.post('/auth/signout', async (request, reply) => {
-    const current = await currentSession(request);
-    if (current) await revokeSession(pool, current.rowId);
-    setCookie(reply, SESSION_COOKIE, '', { path: '/', maxAge: 0, secure });
-    return noStore(reply).redirect('/', 302);
-  });
-
-  // --- the account page ----------------------------------------------------
-
-  app.get('/account', async (request, reply) => {
-    const current = await currentSession(request);
-    if (!current) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
-    const view = await accountView(pool, current.userId);
-    if (!view) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
-    return html(reply, 200, 'Account', renderAccount(view, csrfFor(current.sessionId, config.sessionSecret)));
-  });
-
-  type MintForm = { csrf?: string; label?: string; kind?: string; scope?: string | string[] };
-
-  app.post<{ Body: MintForm }>('/account/credentials', async (request, reply) => {
-    const current = await currentSession(request);
-    if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
-    const body = request.body ?? {};
-    if (body.csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
-      return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
-    }
-    const view = await accountView(pool, current.userId);
-    if (!view) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
-
-    const kind = body.kind === 'agent' || body.kind === 'service' ? body.kind : 'human';
-    const requested = (Array.isArray(body.scope) ? body.scope : body.scope ? [body.scope] : []).map(String);
-    const unknown = requested.filter((s) => !(ACCOUNT_SCOPES as readonly string[]).includes(s));
-    if (unknown.length > 0) {
-      return html(reply, 400, 'Refused', `<h1>Refused</h1><p>Scope${unknown.length > 1 ? 's' : ''} <code>${unknown.map(escape).join('</code>, <code>')}</code> cannot be minted here (§15.3). <a href="/account">Back</a></p>`);
-    }
-    const scopes = ACCOUNT_SCOPES.filter((s) => requested.includes(s));
-    const label = String(body.label ?? '').trim();
-    if (scopes.length === 0 || !label) {
-      return html(reply, 400, 'Refused', `<h1>Refused</h1><p>A credential needs a label and at least one scope. <a href="/account">Back</a></p>`);
-    }
-
-    const client = await pool.connect();
-    let minted: { token: string; id: string };
-    try {
-      await client.query('BEGIN');
-      minted = await mint(client, {
-        userId: current.userId, kind, ...(kind === 'human' ? {} : { principal: view.user.email }), scopes, label,
-        by: view.user.email, byKind: 'human',
-      });
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
-    return html(reply, 201, 'Credential minted', renderMinted(minted.token, label, kind, scopes));
-  });
-
-  app.post<{ Params: { id: string }; Body: { csrf?: string } }>('/account/credentials/:id/revoke', async (request, reply) => {
-    const current = await currentSession(request);
-    if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
-    if ((request.body ?? {}).csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
-      return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
-    }
-    const view = await accountView(pool, current.userId);
-    const own = view?.credentials.find((c) => c.id === request.params.id);
-    if (!view || !own) {
-      return html(reply, 404, 'No such credential', `<h1>No such credential</h1><p>Only your own credentials appear here. <a href="/account">Back</a></p>`);
-    }
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await revoke(client, own.id, view.user.email, `Revoked by its owner on /account: ${own.label}`, 'human');
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
-    return noStore(reply).redirect('/account', 302);
+    });
   });
 }
 

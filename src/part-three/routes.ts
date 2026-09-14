@@ -671,7 +671,7 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
   // it. Only http(s) values become links — anything else is shown as text.
   const headerCell = (k: string, v: unknown): string =>
     k === 'Website' && typeof v === 'string' && /^https?:\/\//i.test(v)
-      ? `<a href="${escape(v)}" rel="noopener nofollow">${escape(v)}</a>`
+      ? `<a href="${escape(v)}" target="_blank" rel="noopener noreferrer nofollow">${escape(v)}</a>`
       : escape(v);
   const headerRows = Object.entries(header)
     .map(([k, v]) => `<tr><th>${escape(k)}</th><td>${headerCell(k, v)}</td></tr>`)
