@@ -51,3 +51,43 @@ are also in the Mac `.env`, so it can be rebuilt from there
 then `rollout restart`, which is safe once the image is pinned by SHA). One more lesson from
 the same evening: copy client ids and secrets from the provider's page, never retype them
 from a screenshot — `5Ow` and `50w` are the same picture.
+
+## Backups, and the one thing they don't cover
+
+`deploy/k8s/40-backup.yaml` has run since Phase 0: a CronJob at 03:15 UTC takes a
+`pg_dump` of `cp_registry`, gzips it onto the `registry-backups` PVC, and deletes dumps
+older than 30 days. The whole dataset is kilobytes.
+
+```sh
+kubectl -n cp-registry get cronjob registry-backup
+kubectl -n cp-registry run dump-ls --rm -it --restart=Never --image=postgres:16 \
+  --overrides='{"spec":{"containers":[{"name":"dump-ls","image":"postgres:16","command":["ls","-la","/backups"],"volumeMounts":[{"name":"b","mountPath":"/backups"}]}],"volumes":[{"name":"b","persistentVolumeClaim":{"claimName":"registry-backups"}}]}}'
+```
+
+**To restore**, load a dump into an empty database and then let the audit chain check
+itself — which is the part a database restore normally cannot offer:
+
+```sh
+gunzip -c cp_registry-<stamp>.sql.gz | psql -d cp_registry_restored
+psql -d cp_registry_restored -c 'SELECT * FROM audit_chain_verify(1)'
+```
+
+Zero rows means the history is exactly what was written (§4.3): not merely that the
+restore succeeded, but that no event was altered, dropped or reordered anywhere in it.
+Any row names the first break. Restore into a *new* database and compare before pointing
+anything at it; never restore over the live one to "see if it works".
+
+What this does not cover: the dumps live on a PVC in the same cluster and the same GCP
+project as the database they protect, so they survive a bad migration, a dropped table and
+a lost pod, but not the loss of the cluster or the project. Until the move to
+`cnscp-registry` and a managed Postgres — when this is set up properly — take a copy off
+the cluster from time to time, which is one command:
+
+```sh
+kubectl -n cp-registry exec deploy/registry -- sh -c \
+  'PGPASSWORD=$POSTGRES_PASSWORD pg_dump -h postgres -U $POSTGRES_USER -d cp_registry | gzip' \
+  > ~/Registrar/backups/cp_registry-$(date +%Y%m%d).sql.gz
+```
+
+A backup nobody has restored is a hypothesis. Restoring one into a throwaway local
+Postgres and seeing `audit_chain_verify` return nothing takes half an hour and settles it.

@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.11 · 13 September 2026
+**Status:** Draft v0.12 · 14 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, clean reading copy §1–§10, assembled **8 September 2026** from the canon working drafts at that date — §1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, because the 2026 revision is still in draft and not yet public.** This design is written against one identifiable artifact:
@@ -23,6 +23,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.12 makes "held by the operator" true of the table, not just the prose (14 September).** §3.2 gains the `allocation withhold` act: custody of an infrastructure or path-shadowing Prefix by the operator organization, no evidence flag because the policy entry is the evidence, public in the journal because followers exist now in a way they did not at bootstrap. `account` and `auth` were withheld in policy on the 13th and had no allocation row on canon; `custodyGaps()` and `test/withhold.test.ts` are what would have caught that the same hour. `deploy/RELEASING.md` records the nightly backup, how to restore one, and what `audit_chain_verify` proves about a restore.
 >
 > **v0.11 lets a Prefix change hands (13 September).** §8.4 gains its operator form: `allocation transfer`, evidence required, one audited public transaction, the seam doing the rest; and §9.2 an `organization rename`. §10.2 ruling 4's release path now exists, and its first uses are recorded there. §5 clarifies that the operator is an organization — CNS/CP — distinct from Padi, Inc. §3.2 withholds `account` and `auth` (the §15.3 paths). §25 gains Q13, for OSTERA: whether the specification should standardize the Registry's HTTP interface and reserve the words it needs.
 >
@@ -171,6 +173,21 @@ Beyond those, the allocation function may withhold Prefixes as policy (spec §7.
 | Restricted | Single-character Prefixes; a published trademark watch list | Allocatable only on review, with recorded rationale. |
 
 **Withheld is not the same as reserved.** The two spec-reserved Prefixes SHALL NOT be allocated, ever, by anyone. A withheld Prefix is this operator's policy choice under spec §7.1 and may be released later by a recorded decision — but while withheld it is held by the operator, so nothing beneath it is ownerless.
+
+**And held means held — there is a row.** "Held by the operator" is not a manner of speaking: `authorizes()` declines to refuse on the withheld list precisely because a withheld Prefix is supposed to have a real allocation behind it, and the allocation page, the snapshot and the seam all read that row rather than this table. The Phase 0 seed makes it true for every entry on the list *at the moment it runs* — and that is the whole of the guarantee. A Prefix added to the list afterwards, on a Registry seeded before, has no row, and the sentence above is quietly false for it. That is what happened to `account` and `auth`: withheld in policy on 13 September, invisible in the allocation table on a canon seeded on the 11th, and protected only by the accident that a route answers those two paths first.
+
+*Ruled 14 Sept 2026.* An operator act closes the gap and keeps it closed:
+
+```
+npm run operator -- allocation withhold --tlp account --by anto@padi.io
+npm run operator -- allocation withhold --all --dry-run --by anto@padi.io
+```
+
+It is custody, not allocation, and it is narrow in four ways. It allocates only to the operator organization. It allocates only a Prefix this policy already withholds, and only in the `infrastructure` and `path-shadowing` classes — the empty names the Registry needs for itself; a `documentary` or `operator-held` entry is seed inventory, with records beneath it, and is refused. It never touches a spec-reserved Prefix, which is nobody's to allocate including the operator's. And it takes no `--evidence`, because unlike an allocation ruling — where the evidence is a fact about the world only the operator has seen — the published policy entry *is* the evidence: the audit event records the rule's own class and rationale.
+
+The event is `allocation.create`, which is public (§20.1). The seed's `allocation.grandfather` is not, and correctly so: bootstrap was a single load that every follower receives whole in the snapshot. A row created now arrives after followers exist, so the journal is the only way they learn of it — and who holds a Prefix is exactly what §7.4 says third parties must be able to check. `--all` works through every gap, one transaction each, so a refusal on the fourth does not undo the three that were sound; `--dry-run` names them and writes nothing.
+
+The check that makes the ruling stick is `custodyGaps()`, asserted in `test/withhold.test.ts`: after a seed there are no gaps, and a Prefix whose row is missing is named. That is the test that would have failed on 12 September, an hour after §15.3 took the paths.
 
 ### 3.3 Rules that bind the whole namespace
 

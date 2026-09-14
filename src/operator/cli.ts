@@ -12,6 +12,8 @@
  *   npm run operator -- credential revoke --id <uuid> --reason "rotated" --by anto@padi.io
  *   npm run operator -- allocation transfer --tlp ibb --to "C4SB (Coalition for Smarter Buildings)" [--create] \
  *       --evidence "<why this organization is the holder>" --by anto@padi.io
+ *   npm run operator -- allocation withhold --tlp account --by anto@padi.io
+ *   npm run operator -- allocation withhold --all [--dry-run] --by anto@padi.io
  *   npm run operator -- organization rename --org "Padi, Inc." --to "CNS/CP" --by anto@padi.io
  *
  * Runs against DATABASE_URL directly — inside the cluster via
@@ -36,6 +38,7 @@ import { closePool, getPool, inTransaction } from '../db.ts';
 import { record } from '../audit.ts';
 import { list, mint, revoke } from '../credentials/store.ts';
 import { transferTlp } from '../part-one/transfer.ts';
+import { custodyGaps, withholdTlp } from '../part-one/withhold.ts';
 import { renameOrganization } from '../part-one/organization.ts';
 import { parseScopes, SCOPES } from '../part-two/routes.ts';
 
@@ -62,6 +65,8 @@ const { values } = parseArgs({
     'evidence': { type: 'string' },
     'website': { type: 'string' },
     'contact': { type: 'string' },
+    'all': { type: 'boolean' },
+    'dry-run': { type: 'boolean' },
   },
 });
 
@@ -77,6 +82,7 @@ function usage(problem?: string): never {
   npm run operator -- credential revoke --id <uuid> --reason "<why>" --by <operator email>
   npm run operator -- allocation transfer --tlp <prefix> --to "<org name or id>" [--create [--website <url>] [--contact <email>]]
                                           --evidence "<why this organization is the holder>" --by <operator email>
+  npm run operator -- allocation withhold --tlp <prefix> | --all [--dry-run] --by <operator email>
   npm run operator -- organization rename --org "<org name or id>" --to "<new name>" --by <operator email>
 
 Scopes: ${SCOPES.join(' · ')}`);
@@ -239,6 +245,49 @@ async function main(): Promise<void> {
       return;
     }
     console.log(`cp:${outcome.tlp}  ${outcome.from.name}  →  ${outcome.to.name}${outcome.to.created ? '  (organization created)' : ''}`);
+    return;
+  }
+
+  // Custody of a Prefix the operator's own policy withholds (§3.2). Narrow by
+  // construction: only the operator organization, only the infrastructure and
+  // path-shadowing classes, never a spec-reserved name, and no --evidence,
+  // because the published policy entry is the evidence. See withhold.ts.
+  if (noun === 'allocation' && verb === 'withhold') {
+    if (!values.tlp && !values.all) usage('allocation withhold needs --tlp <prefix>, or --all to close every gap.');
+    if (values.tlp && values.all) usage('allocation withhold takes --tlp or --all, not both.');
+    const who = requireBy();
+
+    const gaps = values.all
+      ? await inTransaction((db) => custodyGaps(db))
+      : [values.tlp!];
+
+    if (values.all && gaps.length === 0) {
+      console.log('every withheld Prefix the operator is responsible for already has an allocation; nothing to do');
+      return;
+    }
+
+    if (values['dry-run']) {
+      for (const tlp of gaps) console.log(`would take custody of cp:${tlp}`);
+      console.log(`${gaps.length} allocation${gaps.length === 1 ? '' : 's'} would be created; nothing was written`);
+      return;
+    }
+
+    // One transaction per Prefix: a refusal on the fourth must not undo the
+    // three that were sound.
+    let created = 0;
+    for (const tlp of gaps) {
+      const outcome = await inTransaction((db) =>
+        withholdTlp(db, { tlp, actor: { id: who, kind: 'operator', principal: who } }),
+      );
+      if (!outcome.withheld) {
+        console.error(`refused (${outcome.code}): ${outcome.message}`);
+        process.exitCode = 2;
+        continue;
+      }
+      created += 1;
+      console.log(`cp:${outcome.tlp}  →  ${outcome.holder.name}  (withheld: ${outcome.class})`);
+    }
+    if (gaps.length > 1) console.log(`${created} of ${gaps.length} created`);
     return;
   }
 
