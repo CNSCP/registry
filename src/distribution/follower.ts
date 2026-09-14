@@ -30,6 +30,8 @@ import {
   type Snapshot,
 } from './journal.ts';
 import { instanceState } from './store.ts';
+import { receiveAnchor } from './anchor-store.ts';
+import type { AnchorDocument, AnchorVerdict } from './anchor.ts';
 
 /** Enough of fetch() to be replaced by app.inject() in tests. */
 export type Fetch = (url: string) => Promise<{ status: number; json(): Promise<unknown> }>;
@@ -121,7 +123,48 @@ export async function bootstrap(pool: pg.Pool, upstream: string, fetch: Fetch = 
   return { bootstrapped: true, head: snap.head };
 }
 
-export type SyncResult = { pages: number; applied: number; cursor: { seq: number; event_hash: string | null } };
+export type SyncResult = {
+  pages: number;
+  applied: number;
+  cursor: { seq: number; event_hash: string | null };
+  /** §20.2: what the signed anchor said about the history this instance holds. */
+  anchor?: AnchorVerdict | { state: 'none' };
+};
+
+/**
+ * Check the upstream anchor against the journal this instance verified for
+ * ITSELF (§20.2). The comparison must be against locally held entries: a host
+ * serving a fork would serve the fork that matches its own anchor, so asking
+ * it again proves nothing. Divergence is reported and recorded, and the caller
+ * stops — an instance that keeps following a chain it knows disagrees with the
+ * signed head is serving content nobody attested to.
+ */
+export async function checkUpstreamAnchor(
+  pool: pg.Pool,
+  rootKeyId: string,
+  fetch: Fetch = globalThis.fetch,
+): Promise<AnchorVerdict | { state: 'none' }> {
+  const state = await instanceState(pool);
+  if (!state) throw new FollowerError('not bootstrapped');
+  let document: AnchorDocument;
+  try {
+    document = await getJson<AnchorDocument>(fetch, `${state.upstream}/.well-known/cp-anchor`);
+  } catch {
+    // No anchor published yet, or unreachable. Not an error: the chain is
+    // still verified by hashes, and §20.2 says a fork is what is unprotected.
+    return { state: 'none' };
+  }
+  const verdict = await receiveAnchor(pool, document, { rootKeyId, expectOrigin: state.upstream });
+  if (verdict.state === 'diverged') {
+    await pool
+      .query(`UPDATE instance_state SET last_error = $1, last_error_at = now()`, [
+        `the signed anchor at seq ${verdict.head_seq} names head ${verdict.signed}; this instance verified ${verdict.held}. ` +
+          `The history here is not the one the operator committed to publicly (§20.2). Not advancing.`,
+      ])
+      .catch(() => undefined);
+  }
+  return verdict;
+}
 
 /**
  * Follow the journal from the cursor to the head. One transaction per page.

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Connection Profile Registry — allocation spine, authoring, resolution, and the distribution feed with local instances",
+  "description": "Connection Profile Registry \u2014 allocation spine, authoring, resolution, and the distribution feed with local instances",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -28,7 +28,8 @@
     "authoritative": "node --env-file-if-exists=.env --experimental-strip-types src/authoritative-server.ts",
     "mcp": "node --env-file-if-exists=.env --experimental-strip-types src/mcp/server.ts",
     "instance": "node --env-file-if-exists=.env --experimental-strip-types src/instance-server.ts",
-    "verify-journal": "node --experimental-strip-types src/distribution/verify-cli.ts"
+    "verify-journal": "node --experimental-strip-types src/distribution/verify-cli.ts",
+    "anchor": "node --env-file-if-exists=.env --experimental-strip-types src/anchor/sign-cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

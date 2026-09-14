@@ -91,3 +91,45 @@ kubectl -n cp-registry exec deploy/registry -- sh -c \
 
 A backup nobody has restored is a hypothesis. Restoring one into a throwaway local
 Postgres and seeing `audit_chain_verify` return nothing takes half an hour and settles it.
+
+## The weekly anchor (§20.2)
+
+Migration 12 (`1730000012000_anchor`) adds `anchor_key` and `anchor`; it changes no
+existing table, so the usual order applies — apply the manifest if it changed, `set image`,
+*then* `migrate up`.
+
+First time only, on the Mac:
+
+```sh
+npm run anchor -- --new-key cp-anchor-2026-09
+```
+
+That writes `~/.cp-registry/anchor-key.pem` (mode 0600) and prints the public key and a
+fingerprint. **The private key never leaves that machine** — not into a chat, an email, a
+screenshot or a log; nothing in the Registry reads one, and nothing needs to. Publish the
+fingerprint in `REGISTRY-DESIGN.md` §20.2, the README and on cnscp.io, because the first key
+is the one thing the mechanism cannot vouch for. Then register the public half:
+
+```sh
+kubectl -n cp-registry exec deploy/registry -- npm run operator -- \
+  anchor key add --key-id cp-anchor-2026-09 --public-key <base64url> --by anto@padi.io
+```
+
+Then weekly, and after anything irreversible (a publication, a deprecation, an allocation,
+a transfer):
+
+```sh
+CP_ANCHOR_KEY_ID=cp-anchor-2026-09 npm run anchor -- --emit /tmp/anchor.json
+kubectl -n cp-registry exec -i deploy/registry -- npm run operator -- \
+  anchor publish --by anto@padi.io < /tmp/anchor.json
+```
+
+and commit the same document to the public anchor mirror. Check it:
+
+```sh
+curl -s https://cp.cnscp.io/.well-known/cp-anchor
+npm run verify-journal -- https://cp.cnscp.io --anchor cp-anchor-2026-09
+```
+
+The last line should say `anchor verified at seq N`. `FORK` means the journal served does
+not match the head that was signed — stop and keep both documents; that is the evidence.

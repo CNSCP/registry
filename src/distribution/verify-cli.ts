@@ -1,7 +1,7 @@
 /**
  * Verify a Registry's journal from the outside — design §20.1, spec §9.3.
  *
- *   npm run verify-journal -- https://cp.cnscp.io [--since N] [--resolve]
+ *   npm run verify-journal -- https://cp.cnscp.io [--since N] [--resolve] [--anchor <root key id>]
  *
  * Walks the journal from genesis (or --since), checks that every link
  * continues from the last, recomputes every public event's hash from the
@@ -12,18 +12,30 @@
  * is the contract the journal carries: "independent parties can detect
  * whether copies agree" (spec §9.3), done by one such party.
  *
+ * With --anchor it also fetches the signed anchor (§20.2) and checks that the
+ * head the operator committed to publicly is the head this walk arrived at.
+ * That is the one check hashes cannot make for themselves: a fork is two
+ * internally perfect chains, and only an outside signature distinguishes them.
+ *
  * It holds no state and needs no credential. Anyone can run it against
  * anyone's instance, which is the point.
  */
 
 import { contractHash } from '../profile/store.ts';
 import { JOURNAL_FORMAT, verifyPage, type JournalPage, type PublicEntry } from './journal.ts';
+import { keyIsTrusted, verifyAnchor, ageSeconds, type AnchorDocument, type AnchorKey } from './anchor.ts';
 
 const args = process.argv.slice(2);
 const host = (args.find((a) => !a.startsWith('--')) ?? 'https://cp.cnscp.io').replace(/\/+$/, '');
 const sinceArg = args.indexOf('--since');
 let since = sinceArg === -1 ? 0 : Number(args[sinceArg + 1]);
 const resolveToo = args.includes('--resolve');
+const anchorArg = args.indexOf('--anchor');
+const anchorRoot = anchorArg === -1 ? null : args[anchorArg + 1];
+if (anchorArg !== -1 && (!anchorRoot || anchorRoot.startsWith('--'))) {
+  console.error('--anchor takes the key id you already trust, e.g. --anchor cp-anchor-2026-09');
+  process.exit(2);
+}
 if (!Number.isInteger(since) || since < 0) {
   console.error('--since takes a non-negative integer');
   process.exit(2);
@@ -35,6 +47,8 @@ let publicActs = 0;
 let documents = 0;
 let failed = 0;
 const publications: PublicEntry[] = [];
+/** seq → event_hash, as verified by THIS walk; what an anchor is compared against. */
+const seenHashes = new Map<number, string>();
 
 for (;;) {
   const response = await fetch(`${host}/distribution/journal?since=${since}&limit=1000`);
@@ -65,6 +79,7 @@ for (;;) {
   }
   for (const e of page.entries) {
     entries++;
+    seenHashes.set(e.seq, e.event_hash);
     if (e.public) {
       publicActs++;
       if (e.document !== undefined) documents++;
@@ -111,6 +126,47 @@ if (resolveToo) {
   }
   if (skipped > 0) console.log(`${skipped} publication(s) precede this host's journal copy and were not compared`);
   console.log(`${agreed} of ${publications.length - skipped} published version(s) serve the contract that was published`);
+}
+
+if (anchorRoot) {
+  const anchorResponse = await fetch(`${host}/.well-known/cp-anchor`);
+  if (!anchorResponse.ok) {
+    failed++;
+    console.error(`no anchor published at ${host}/.well-known/cp-anchor (${anchorResponse.status}); a fork would be undetectable`);
+  } else {
+    const document = (await anchorResponse.json()) as AnchorDocument;
+    const keysResponse = await fetch(`${host}/.well-known/cp-keys`);
+    const keys: AnchorKey[] = keysResponse.ok ? ((await keysResponse.json()) as { keys: AnchorKey[] }).keys : [];
+    const chain = keyIsTrusted(keys, document.key_id, anchorRoot);
+
+    if (!chain.trusted) {
+      failed++;
+      console.error(`the anchor is signed by "${document.key_id}", which is ${chain.reason} relative to the key you named`);
+    } else if (!verifyAnchor(document, chain.key.public_key)) {
+      failed++;
+      console.error(`the anchor's signature does not verify under ${document.key_id}`);
+    } else if (document.head_seq > (expected?.seq ?? since)) {
+      console.log(`anchor at seq ${document.head_seq} is ahead of this walk (seq ${expected?.seq ?? since}); nothing compared`);
+    } else {
+      // Find what THIS walk recorded at the anchored sequence.
+      const held = seenHashes.get(document.head_seq);
+      if (!held) {
+        console.log(`anchor at seq ${document.head_seq} precedes the journal this host serves; nothing compared`);
+      } else if (held !== document.head_event_hash) {
+        failed++;
+        console.error(
+          `FORK: the anchor signs head ${document.head_event_hash} at seq ${document.head_seq}; this journal says ${held}. ` +
+            `The history served here is not the one the operator committed to publicly.`,
+        );
+      } else {
+        const age = ageSeconds(document);
+        console.log(
+          `anchor verified at seq ${document.head_seq}, signed by ${document.key_id} ${Math.round(age / 3600)}h ago` +
+            (age > 14 * 86400 ? ' — STALE: nothing since is attested' : ''),
+        );
+      }
+    }
+  }
 }
 
 if (failed > 0) {

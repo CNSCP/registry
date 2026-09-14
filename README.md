@@ -93,6 +93,14 @@ since hand-authoring by an assistant is the Phase 0 publication path:
   Property. The same findings ride along with `check_publishable`
 - `npm run authoritative` starts the combined authoring+resolution host it talks to
 
+The signed anchor (§20.2): the operator signs the chain head on their own machine — weekly,
+and after anything irreversible — and publishes it at `/.well-known/cp-anchor`, with the key
+list at `/.well-known/cp-keys` and a copy in a repository the Registry does not control. A
+local instance compares the signed head against the entries it verified for itself and stops
+on divergence; anyone can check from outside with
+`npm run verify-journal -- https://cp.cnscp.io --anchor <key id>`. **The Registry holds no
+private key**: a key it could use to sign is a key that could sign a forked head.
+
 Seam isolation (§23 priority 6, §4.1 rule 2): with Part One down, every read keeps working
 and every write waits, with a structured 503 that says so — spec §7.3 requires the owner's
 authorization for every act on a name, so nothing is inferred from a name's recorded

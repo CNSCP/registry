@@ -6,12 +6,15 @@
  *   GET /distribution/snapshot   bootstrap: everything published, at one instant
  *   GET /distribution/journal    follow:    the audit chain, projected, from a cursor
  *   GET /distribution/status     where this host stands
+ *   GET /.well-known/cp-anchor   the latest signed anchor of the chain head (§20.2)
+ *   GET /.well-known/cp-keys     the keys an anchor may be signed by, and what vouches for each
  */
 
 import type { FastifyInstance } from 'fastify';
 import type pg from 'pg';
 import { JOURNAL_FORMAT } from './journal.ts';
 import { chainHead, instanceState, journalFromAudit, journalFromCopy, snapshot, type Role } from './store.ts';
+import { anchorForStatus, keyList, latestAnchor } from './anchor-store.ts';
 
 export type DistributionDeps = {
   pool: pg.Pool;
@@ -25,6 +28,36 @@ export const JOURNAL_MAX_LIMIT = 1000;
 
 export async function registerDistributionRoutes(app: FastifyInstance, deps: DistributionDeps): Promise<void> {
   const { pool, role } = deps;
+
+
+  // --- §20.2. The anchor and its keys. -------------------------------------
+  //
+  // Served by the very host the anchor exists to police, which is why it is
+  // never the only copy: the same document is mirrored in a public repository
+  // the Registry does not control, and a disagreement between the two is
+  // itself the evidence. Freshness is checkable because `at` is part of what
+  // was signed — a host that cannot forge a signature can still serve an old
+  // anchor and hope nobody reads the date.
+
+  app.get('/.well-known/cp-anchor', async (_request, reply) => {
+    const anchor = await latestAnchor(pool);
+    if (!anchor) {
+      return reply.header('cache-control', 'no-cache').code(404).send({
+        anchor: null,
+        message: 'No anchor has been published yet (§20.2). The chain is still verifiable by hashes alone; a fork is not.',
+      });
+    }
+    return reply.header('cache-control', 'no-cache').send(anchorForStatus(anchor));
+  });
+
+  app.get('/.well-known/cp-keys', async (_request, reply) => {
+    return reply.header('cache-control', 'no-cache').send({
+      journal_format: JOURNAL_FORMAT,
+      keys: await keyList(pool),
+      note:
+        'Each key after the first carries the predecessor\'s signature over its canonical form. The first key is vouched for by nothing here: check its fingerprint against the one published in REGISTRY-DESIGN.md §20.2 and on cnscp.io.',
+    });
+  });
 
   app.get('/distribution/snapshot', async (_request, reply) => {
     const body = await snapshot(pool, role);
@@ -66,8 +99,7 @@ export async function registerDistributionRoutes(app: FastifyInstance, deps: Dis
         role,
         journal_format: JOURNAL_FORMAT,
         head: await chainHead(pool, role),
-        // The signed anchor of §4.3 is not yet published (§20.1).
-        anchor: null,
+        anchor: anchorForStatus(await latestAnchor(pool)),
       });
     }
 
@@ -86,8 +118,7 @@ export async function registerDistributionRoutes(app: FastifyInstance, deps: Dis
       lag_seconds: state?.last_sync_at ? Math.round((now - state.last_sync_at.getTime()) / 1000) : null,
       last_error: state?.last_error ?? null,
       last_error_at: state?.last_error_at ?? null,
-      anchor: null,
-      anchor_verified: null,
+      anchor: anchorForStatus(await latestAnchor(pool)),
     });
   });
 }

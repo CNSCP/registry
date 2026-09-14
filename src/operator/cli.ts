@@ -39,6 +39,9 @@ import { record } from '../audit.ts';
 import { list, mint, revoke } from '../credentials/store.ts';
 import { transferTlp } from '../part-one/transfer.ts';
 import { custodyGaps, withholdTlp } from '../part-one/withhold.ts';
+import { addKey, recordAnchor } from '../distribution/anchor-store.ts';
+import { keyIsTrusted, verifyAnchor, type AnchorDocument } from '../distribution/anchor.ts';
+import { keyList } from '../distribution/anchor-store.ts';
 import { renameOrganization } from '../part-one/organization.ts';
 import { parseScopes, SCOPES } from '../part-two/routes.ts';
 
@@ -67,6 +70,10 @@ const { values } = parseArgs({
     'contact': { type: 'string' },
     'all': { type: 'boolean' },
     'dry-run': { type: 'boolean' },
+    'key-id': { type: 'string' },
+    'public-key': { type: 'string' },
+    'vouched-by': { type: 'string' },
+    'vouch-signature': { type: 'string' },
   },
 });
 
@@ -84,6 +91,8 @@ function usage(problem?: string): never {
                                           --evidence "<why this organization is the holder>" --by <operator email>
   npm run operator -- allocation withhold --tlp <prefix> | --all [--dry-run] --by <operator email>
   npm run operator -- organization rename --org "<org name or id>" --to "<new name>" --by <operator email>
+  npm run operator -- anchor key add --key-id <id> --public-key <base64url> [--vouched-by <id> --vouch-signature <sig>] --by <operator email>
+  npm run operator -- anchor publish --by <operator email>   (the signed document on stdin)
 
 Scopes: ${SCOPES.join(' · ')}`);
   process.exit(1);
@@ -288,6 +297,78 @@ async function main(): Promise<void> {
       console.log(`cp:${outcome.tlp}  →  ${outcome.holder.name}  (withheld: ${outcome.class})`);
     }
     if (gaps.length > 1) console.log(`${created} of ${gaps.length} created`);
+    return;
+  }
+
+  // --- §20.2. The Registry holds public keys and verifies; it never signs. --
+
+  if (noun === 'anchor' && verb === 'key' ) {
+    // `anchor key add` — the third word arrives in rest, so check it plainly.
+    if (rest[0] !== 'add') usage('anchor key takes the verb "add".');
+    if (!values['key-id'] || !values['public-key']) usage('anchor key add needs --key-id and --public-key.');
+    requireBy();
+    const vouchedBy = values['vouched-by'] ?? null;
+    const vouchSignature = values['vouch-signature'] ?? null;
+    if ((vouchedBy === null) !== (vouchSignature === null)) {
+      usage('--vouched-by and --vouch-signature go together: a vouch without a signature vouches for nothing.');
+    }
+    await inTransaction((db) =>
+      addKey(db, {
+        key_id: values['key-id']!,
+        public_key: values['public-key']!,
+        valid_from: new Date().toISOString(),
+        valid_to: null,
+        vouched_by: vouchedBy,
+        vouch_signature: vouchSignature,
+      }),
+    );
+    console.log(`anchor key ${values['key-id']} registered${vouchedBy ? ` (vouched for by ${vouchedBy})` : ' as a root key — publish its fingerprint where a person can check it'}`);
+    return;
+  }
+
+  if (noun === 'anchor' && verb === 'publish') {
+    requireBy();
+    const raw = await new Promise<string>((resolvePromise, rejectPromise) => {
+      let buffer = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => { buffer += chunk; });
+      process.stdin.on('end', () => resolvePromise(buffer));
+      process.stdin.on('error', rejectPromise);
+    });
+    let document: AnchorDocument;
+    try {
+      document = JSON.parse(raw) as AnchorDocument;
+    } catch {
+      usage('anchor publish reads the signed document on stdin; that was not JSON.');
+    }
+
+    const outcome = await inTransaction(async (db) => {
+      // Verify before storing. A Registry that stores an anchor it cannot
+      // verify is publishing someone else's claim under its own name.
+      const keys = await keyList(db);
+      const key = keys.find((k) => k.key_id === document.key_id);
+      if (!key) return { refused: `no such anchor key "${document.key_id}" — register it first with \`anchor key add\`` };
+      if (!verifyAnchor(document, key.public_key)) return { refused: 'the signature does not verify against that key' };
+      return recordAnchor(db, document);
+    });
+
+    if ('refused' in outcome) {
+      console.error(`refused: ${outcome.refused}`);
+      process.exitCode = 2;
+      return;
+    }
+    if (!outcome.recorded) {
+      console.error(`refused (${outcome.code}): ${outcome.message}`);
+      console.error(`  signed now:  ${document.head_event_hash}`);
+      console.error(`  signed before: ${outcome.held}`);
+      process.exitCode = 2;
+      return;
+    }
+    console.log(
+      outcome.already
+        ? `anchor at head ${document.head_seq} was already published; nothing changed`
+        : `anchor published: head ${document.head_seq} signed by ${document.key_id} at ${document.at}`,
+    );
     return;
   }
 
