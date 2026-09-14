@@ -124,7 +124,20 @@ kubectl -n cp-registry exec -i deploy/registry -- npm run operator -- \
   anchor publish --by anto@padi.io < /tmp/anchor.json
 ```
 
-and commit the same document to the public anchor mirror. Check it:
+and commit the same document to the public anchor mirror (`~/Registrar/anchors`,
+published as `github.com/CNSCP/anchors`):
+
+```sh
+cd ~/Registrar/anchors
+curl -s https://cp.cnscp.io/.well-known/cp-anchor \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); d.pop('age_seconds',None); d.pop('verified',None); \
+      stamp=d['at'].replace(':','').replace('-','').replace('Z',''); \
+      open(f\"2026/09/{d['head_seq']:06d}-{stamp}.json\",'w').write(json.dumps(d,indent=2)+'\n')"
+git add -A && git commit -m "Anchor: head <N>" && git push
+```
+
+The mirror exists so the anchor does not live only on the host it checks. Never rewrite a
+file there: a wrong anchor is superseded by a later one, never edited. Check it:
 
 ```sh
 curl -s https://cp.cnscp.io/.well-known/cp-anchor
