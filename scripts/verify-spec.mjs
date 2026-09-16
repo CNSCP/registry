@@ -31,25 +31,39 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED = {
-  file: 'cnscp_2026_spec_clean_read_s1-10.md',
-  sha256: '442043a7c0306f2f9f44a9e923f027a85a02c716baeb130171c6a4b038a712c8',
-  bytes: 134887,
-  assembled: '8 September 2026',
-  sections: '§1 v0.9, §2 v0.14, §3 v0.16, §4 v0.18, §5 v0.16, §6 v0.21, §7 v0.18, §8 v0.26, §9 v0.21, §10 v0.18',
+  file: 'cnscp/specification/cnscp-2026-specification.md',
+  sha256: '072d443584c28b383c228a002ad10cc7e2f5d9bcab40b80d182d385062be6c0e',
+  bytes: 136899,
+  assembled: 'published 16 September 2026',
+  sections: '§1–§10 and Appendices A–C · editors Toby Considine and Anto Budiardjo',
+  // Published 16 Sept 2026 (§25 Q10). The same bytes are served here, so the
+  // pin can now be checked by anyone, not only by someone holding the file:
+  published: 'https://raw.githubusercontent.com/CNSCP/specification/main/cnscp-2026-specification.md',
 };
-// Prior anchor, for the record: bbeec3f7…22be09b (26 Aug 2026, 88,501 bytes),
-// archived beside the design doc as cnscp_2026_spec_clean_read_s1-10_20260826.md.
-// The re-read that moved this pin: Unpublished rename, Registry-holds-no-
-// unpublished-content, Channels, Default — design v0.6 records the deltas.
+// Prior anchors, for the record:
+//   442043a7…8a712c8  8 Sept 2026, 134,887 bytes — the working copy this design
+//                     was written against, one directory above the repository as
+//                     cnscp_2026_spec_clean_read_s1-10.md. The 16 Sept publication
+//                     changed no normative text: the same 108 normative sentences,
+//                     every §1–§10 subsection heading identical; what was added is
+//                     front matter (provenance, requirements language, terminology,
+//                     clause status, reading order) and Appendix C, open issues.
+//   bbeec3f7…22be09b  26 Aug 2026, 88,501 bytes — archived alongside it. The re-read
+//                     that moved that pin: Unpublished rename, Registry-holds-no-
+//                     unpublished-content, Channels, Default; design v0.6 has the deltas.
 
 const here = dirname(fileURLToPath(import.meta.url));
-// The spec is not public (design §25 Q10), so it sits one level above this repository, outside version control.
+// The specification is now public, in its own repository, checked out as a
+// sibling of this one. Still outside THIS repository's version control, so the
+// hash remains the identifier rather than a commit of ours.
 const specPath = resolve(here, '../..', EXPECTED.file);
 
 if (!existsSync(specPath)) {
   console.log(`SKIP  ${EXPECTED.file} is not present.`);
-  console.log(`      The 2026 revision is in draft and not public; this repository does not carry it.`);
-  console.log(`      Expected one directory above the repository, at: ${specPath}`);
+  console.log(`      This repository does not carry the specification. It is public — clone it beside`);
+  console.log(`      this repository, or fetch the pinned bytes directly:`);
+  console.log(`        ${EXPECTED.published}`);
+  console.log(`      Expected at: ${specPath}`);
   process.exit(0);
 }
 
@@ -59,8 +73,9 @@ const actual = createHash('sha256').update(bytes).digest('hex');
 if (actual === EXPECTED.sha256) {
   console.log(`OK    ${EXPECTED.file}`);
   console.log(`      sha256 ${actual}`);
-  console.log(`      ${bytes.length.toLocaleString()} bytes · assembled ${EXPECTED.assembled}`);
+  console.log(`      ${bytes.length.toLocaleString()} bytes · ${EXPECTED.assembled}`);
   console.log(`      ${EXPECTED.sections}`);
+  console.log(`      published at ${EXPECTED.published}`);
   process.exit(0);
 }
 
