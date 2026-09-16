@@ -499,6 +499,14 @@ const SITE_STYLE = `
   .brand img{width:30px;height:30px;border-radius:7px}
   .brand:hover{text-decoration:none}
   .site-nav{margin-left:auto}.site-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap}
+  /* The Registry's own surfaces, set apart from the six this host shares with
+     cnscp.io — so it reads which links stay here and which leave. */
+  .service-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap;
+    padding-left:14px;margin-left:2px;border-left:1px solid var(--border)}
+  .service-nav a{display:block;padding:7px 12px;border-radius:8px;color:var(--body);font-weight:500;font-size:.95rem}
+  .service-nav a:hover{background:var(--panel);color:var(--ink);text-decoration:none}
+  .service-nav a.active{color:var(--blue);font-weight:650}
+  @media (max-width:760px){.service-nav ul{padding-left:0;border-left:0}}
   .site-nav a{display:block;padding:7px 12px;border-radius:8px;color:var(--body);font-weight:500;font-size:.95rem}
   .site-nav a:hover{background:var(--panel);color:var(--ink);text-decoration:none}
   .site-nav a.active{color:var(--blue);font-weight:650}
@@ -556,12 +564,44 @@ const SITE_STYLE = `
  * The Account link appears only on a host that mounts the identity routes
  * (§15.3) — the authoritative host. A local instance has no sign-in.
  */
+/**
+ * The site navigation, shared with cnscp.io — design §4.4.
+ *
+ * The same six items, the same order, the same labels as the website's
+ * `nav.json`. They are DUPLICATED rather than fetched: §4.4 gives each host
+ * its own console on its own origin so that no console makes a cross-origin
+ * call, and the Registry is the thing that has to keep answering when other
+ * things are down. A header pulled from cnscp.io would make every Profile
+ * page depend on a static site being up.
+ *
+ * Duplication that nothing checks is how the licence texts drifted across
+ * this estate, so `test/nav.test.ts` compares this list against the website's
+ * `nav.json` when that repository is checked out beside this one, and skips
+ * when it is not — the `verify-spec` pattern.
+ *
+ * `Registry` is this host's own root; everything else leaves.
+ */
+export const SITE_NAV: readonly { id: string; label: string; href: string }[] = [
+  { id: 'home', label: 'Home', href: 'https://cnscp.io' },
+  { id: 'registry', label: 'Registry', href: '/' },
+  { id: 'spec', label: 'Specification', href: 'https://github.com/CNSCP/specification' },
+  { id: 'legal', label: 'Legal', href: 'https://cnscp.io/license/' },
+  { id: 'about', label: 'About', href: 'https://cnscp.io/about.html' },
+  { id: 'contact', label: 'Contact', href: 'https://cnscp.io/contact.html' },
+];
+
+/** This host's own surfaces, which exist nowhere else. */
+const SERVICE_NAV: readonly { id: string; label: string; href: string }[] = [
+  { id: 'catalog', label: 'Catalog', href: '/profiles' },
+  { id: 'account', label: 'Account', href: '/account' },
+];
+
 let accountNav = false;
 export function enableAccountNav(): void {
   accountNav = true;
 }
 
-export type NavId = 'registry' | 'catalog' | 'account';
+export type NavId = 'registry' | 'catalog' | 'account' | 'legal' | 'about';
 
 function chrome(title: string, active: NavId | null, body: string): string {
   const nav = (id: string, href: string, label: string) =>
@@ -574,12 +614,13 @@ function chrome(title: string, active: NavId | null, body: string): string {
 <style>${SITE_STYLE}</style></head><body>
 <header class="site-header"><div class="bar">
   <a class="brand" href="https://cnscp.io"><img src="https://cnscp.io/CNSCP-Square.png" alt="">CNS/CP</a>
-  <nav class="site-nav"><ul>
-    ${nav('registry', '/', 'Registry')}
-    ${nav('catalog', '/profiles', 'Catalog')}
-    <li><a href="https://github.com/CNSCP/specification/blob/main/cns-cp.md">Specification</a></li>
-    <li><a href="https://cnscp.io/about.html">About CNS/CP</a></li>
-    ${accountNav ? nav('account', '/account', 'Account') : ''}
+  <nav class="site-nav" aria-label="CNS/CP"><ul>
+    ${SITE_NAV.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
+  </ul></nav>
+  <nav class="service-nav" aria-label="Registry"><ul>
+    ${SERVICE_NAV.filter((i) => i.id !== 'account' || accountNav)
+      .map((i) => nav(i.id, i.href, i.label))
+      .join('\n    ')}
   </ul></nav>
 </div></header>
 ${body}
