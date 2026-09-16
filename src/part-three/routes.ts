@@ -498,11 +498,12 @@ const SITE_STYLE = `
   .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:700;font-size:1.1rem}
   .brand img{width:30px;height:30px;border-radius:7px}
   .brand:hover{text-decoration:none}
-  .site-nav{margin-left:auto}.site-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap}
+  .site-nav{margin-left:auto}.site-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap;margin:0}
+  .site-nav li,.service-nav li{margin:0}
   /* The Registry's own surfaces, set apart from the six this host shares with
      cnscp.io — so it reads which links stay here and which leave. */
   .service-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap;
-    padding-left:14px;margin-left:2px;border-left:1px solid var(--border)}
+    padding-left:14px;margin:0 0 0 2px;border-left:1px solid var(--border)}
   .service-nav a{display:block;padding:7px 12px;border-radius:8px;color:var(--body);font-weight:500;font-size:.95rem}
   .service-nav a:hover{background:var(--panel);color:var(--ink);text-decoration:none}
   .service-nav a.active{color:var(--blue);font-weight:650}
