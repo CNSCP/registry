@@ -1,17 +1,27 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.11.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.16.
 
-**The normative anchor is the CNS/CP 2026 revision, which is still in draft.** It is pinned
-by hash — `442043a7…8a712c8`, assembled **8 September 2026** — and `npm run verify-spec`
-checks that the copy one directory above this repository is still that one. When the anchor moves,
-the check fails until the design and code are re-read against the new revision; it did
-exactly that on 9 September, and design §24.5 records what the re-read changed (the
-Unpublished rename, the Registry holding no unpublished content, Channels, Default). The
-public repository at `github.com/CNSCP/specification` carries the **2022** draft, which
-this code does not follow; `spec2026.ts` refuses both superseded Status vocabularies
-("Active" from 2022, "Draft" from the 26 Aug 2026 draft) by name.
+**The normative anchor is the CNS/CP 2026 revision, published 16 September 2026 at
+[github.com/CNSCP/specification](https://github.com/CNSCP/specification).** It is pinned by
+hash — `072d4435…be6c0e`, 136,899 bytes — and `npm run verify-spec` checks that the copy
+beside this repository is still that one. The same bytes are served at
+[raw.githubusercontent.com/CNSCP/specification/main/cnscp-2026-specification.md](https://raw.githubusercontent.com/CNSCP/specification/main/cnscp-2026-specification.md),
+so the pin can be checked by anyone rather than only by someone holding the file.
+
+The pin stays now that the revision is public, because a published working draft still
+revises: when the anchor moves, the check fails until the design and code are re-read against
+the new revision. It did exactly that on 9 September, and design §24.5 records what changed
+(the Unpublished rename, the Registry holding no unpublished content, Channels, Default). The
+16 September publication moved the pin without moving any citation — the same normative
+sentences, every §1–§10 subsection heading identical.
+
+The December 2022 draft is kept as history under
+[`2022/`](https://github.com/CNSCP/specification/tree/main/2022). This code does not follow
+it, and `spec2026.ts` refuses both superseded Status vocabularies by name ("Active" from
+2022, "Draft" from the 26 Aug 2026 draft) — that shape still exists in the world, so it is
+refused rather than silently reinterpreted.
 
 ## What this is, and what it deliberately is not
 

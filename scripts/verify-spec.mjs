@@ -3,8 +3,10 @@
  * Verify the normative anchor.
  *
  * REGISTRY-DESIGN.md is written against one identifiable copy of the CNS/CP
- * 2026 revision, which is still in draft and not yet public. Every `spec §n`
- * citation in the design means that file and no other.
+ * 2026 revision. Every `spec §n` citation in the design means that file and no
+ * other. The revision was published on 16 September 2026, which changed who can
+ * check the pin — anyone, now — but not the need for one: a published working
+ * draft still revises.
  *
  * The hazard this guards against is silent drift: the working copy is revised,
  * the design's citations quietly stop matching, and nothing notices until
