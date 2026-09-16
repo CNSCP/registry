@@ -31,28 +31,11 @@ import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SPEC_ANCHOR } from './spec-anchor.mjs';
 
-const EXPECTED = {
-  file: 'cnscp/specification/cnscp-2026-specification.md',
-  sha256: '072d443584c28b383c228a002ad10cc7e2f5d9bcab40b80d182d385062be6c0e',
-  bytes: 136899,
-  assembled: 'published 16 September 2026',
-  sections: '§1–§10 and Appendices A–C · editors Toby Considine and Anto Budiardjo',
-  // Published 16 Sept 2026 (§25 Q10). The same bytes are served here, so the
-  // pin can now be checked by anyone, not only by someone holding the file:
-  published: 'https://raw.githubusercontent.com/CNSCP/specification/main/cnscp-2026-specification.md',
-};
-// Prior anchors, for the record:
-//   442043a7…8a712c8  8 Sept 2026, 134,887 bytes — the working copy this design
-//                     was written against, one directory above the repository as
-//                     cnscp_2026_spec_clean_read_s1-10.md. The 16 Sept publication
-//                     changed no normative text: the same 108 normative sentences,
-//                     every §1–§10 subsection heading identical; what was added is
-//                     front matter (provenance, requirements language, terminology,
-//                     clause status, reading order) and Appendix C, open issues.
-//   bbeec3f7…22be09b  26 Aug 2026, 88,501 bytes — archived alongside it. The re-read
-//                     that moved that pin: Unpublished rename, Registry-holds-no-
-//                     unpublished-content, Channels, Default; design v0.6 has the deltas.
+// The pin itself lives in one place, so the documents can be checked against
+// the same constant this script checks the file against (test/spec-anchor.test.ts).
+const EXPECTED = SPEC_ANCHOR;
 
 const here = dirname(fileURLToPath(import.meta.url));
 // The specification is now public, in its own repository, checked out as a
