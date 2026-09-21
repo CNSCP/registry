@@ -62,7 +62,7 @@ export const WITHHELD: readonly WithheldRule[] = [
   // A single dotless segment resolves to the allocation it denotes (§19.1), so
   // every reserved path must ALSO be a withheld Prefix or it would be shadowed.
   // These two lists must be extended together — see RESERVED_PATHS below.
-  ...(['console', 'assets', 'profiles', 'distribution', 'health', 'well-known', 'operator', 'account', 'auth'] as const).map(
+  ...(['console', 'assets', 'profiles', 'distribution', 'health', 'well-known', 'operator', 'account', 'auth', 'workspace'] as const).map(
     (tlp) =>
       ({
         tlp,
@@ -128,6 +128,11 @@ export const RESERVED_PATHS: readonly string[] = [
   // §15.3 (12 Sept 2026): sign-in and the account page.
   'account',
   'auth',
+  // §20.3 (21 Sept 2026): the index of forms a host's workspace holds. Served
+  // by instances that run one, but reserved everywhere: a dotless path is a
+  // dotless path on every host, and an allocation named `workspace` would
+  // shadow it (§4.4). Custody on canon: `allocation withhold --tlp workspace`.
+  'workspace',
 ] as const;
 
 /** Restricted: allocatable, but only on reviewer approval with recorded rationale (§8.2). */

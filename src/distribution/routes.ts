@@ -10,7 +10,7 @@
  *   GET /.well-known/cp-keys     the keys an anchor may be signed by, and what vouches for each
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type pg from 'pg';
 import { JOURNAL_FORMAT } from './journal.ts';
 import { chainHead, instanceState, journalFromAudit, journalFromCopy, snapshot, type Role } from './store.ts';
@@ -21,6 +21,8 @@ export type DistributionDeps = {
   role: Role;
   /** Origin of the authoritative host; required for an instance. */
   upstream?: string;
+  /** The workspace beside this instance (§20.3), for `/distribution/status`: the host's second hat, visible. */
+  workspace?: () => Promise<Record<string, unknown>>;
 };
 
 export const JOURNAL_DEFAULT_LIMIT = 200;
@@ -119,6 +121,7 @@ export async function registerDistributionRoutes(app: FastifyInstance, deps: Dis
       last_error: state?.last_error ?? null,
       last_error_at: state?.last_error_at ?? null,
       anchor: anchorForStatus(await latestAnchor(pool)),
+      ...(deps.workspace ? { workspace: await deps.workspace() } : {}),
     });
   });
 }
@@ -128,16 +131,19 @@ export async function registerDistributionRoutes(app: FastifyInstance, deps: Dis
  * An instance mounts no authoring route, so the absence is the enforcement;
  * this makes the refusal say where to go instead of a bare 404.
  */
+export function instanceRefusal(reply: FastifyReply, upstream: string): FastifyReply {
+  return reply.code(405).header('allow', 'GET, HEAD').send({
+    error: 'this is a resolution-only instance; writes go to the authoritative host',
+    authoritative: upstream,
+  });
+}
+
 export function registerInstanceRefusals(app: FastifyInstance, upstream: string): void {
   for (const url of ['/', '/*']) {
     app.route({
       method: ['PUT', 'POST', 'PATCH', 'DELETE'],
       url,
-      handler: async (_request, reply) =>
-        reply.code(405).header('allow', 'GET, HEAD').send({
-          error: 'this is a resolution-only instance; writes go to the authoritative host',
-          authoritative: upstream,
-        }),
+      handler: async (_request, reply) => instanceRefusal(reply, upstream),
     });
   }
 }

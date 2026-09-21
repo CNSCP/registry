@@ -60,6 +60,31 @@ export type ResolutionDeps = {
    */
   role?: Role;
   upstream?: string;
+  /**
+   * The workspace beside an instance (§20.3), when this host runs one. The
+   * Registry surface is unchanged by its presence: every machine
+   * representation of every Registry URL answers as canon does. What the
+   * hooks add is the AUTHOR'S answer at `:unpublished`, and a pill and a
+   * link on the human pages.
+   */
+  workspace?: WorkspaceHooks;
+};
+
+/** What a name page shows for the workspace's form, when this host holds one. */
+export type UnpublishedPill = { href: string; note: string | null };
+
+export type WorkspaceHooks = {
+  /**
+   * `GET /<name>:unpublished` in a machine or HTML representation. Sends the
+   * author's answer and returns true, or returns false to leave the Registry's
+   * own answer — the 404 of §13.3 — in place. Never called for the legacy
+   * representation: the 2022 shape has no Unpublished status to carry.
+   */
+  unpublished(name: string, representation: Representation, reply: FastifyReply): Promise<boolean>;
+  /** Which of these names this host holds a form for, with the pill's note. */
+  held(names: string[]): Promise<Map<string, UnpublishedPill>>;
+  /** For `/health` and `/distribution/status`: the host's second hat, visible. */
+  summary(): Promise<Record<string, unknown>>;
 };
 
 /** `acme.meter.flow:2` → name and version. The colon is the version separator. */
@@ -99,7 +124,14 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
   const { db } = deps;
   const renderHtml = deps.html ?? true;
 
-  app.get('/health', async () => ({ ok: true, part: 'three', surface: 'resolution', role: deps.role ?? 'authoritative' }));
+  const workspace = deps.workspace;
+  app.get('/health', async () => ({
+    ok: true,
+    part: 'three',
+    surface: 'resolution',
+    role: deps.role ?? 'authoritative',
+    ...(workspace ? { workspace: await workspace.summary() } : {}),
+  }));
 
   // §20: the feed is served wherever resolution is. It needs a pool because
   // the snapshot takes a REPEATABLE READ transaction of its own.
@@ -108,8 +140,13 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       pool: db as pg.Pool,
       role: deps.role ?? 'authoritative',
       ...(deps.upstream ? { upstream: deps.upstream } : {}),
+      ...(workspace ? { workspace: () => workspace.summary() } : {}),
     });
   }
+
+  /** The pills and links the human pages add when this host holds forms; empty when it runs no workspace. */
+  const heldBy = async (names: string[]): Promise<Map<string, UnpublishedPill>> =>
+    workspace && names.length > 0 ? workspace.held(names) : new Map();
 
   /**
    * The root index. Every allocated Top Level Prefix — stable public facts
@@ -215,7 +252,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       };
 
       if (representation === 'html' && renderHtml) {
-        return reply.type(MEDIA.html).send(renderCatalog(body));
+        return reply.type(MEDIA.html).send(renderCatalog(body, await heldBy(body.entries.map((e) => e.name))));
       }
       return reply.type(representation === 'spec2026' ? MEDIA.spec2026 : MEDIA.legacy).send(body);
     },
@@ -274,6 +311,14 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     if (problem) return reply.code(400).send({ error: `not a well-formed Profile name (${problem})` });
 
     if (version === 'unpublished') {
+      // A host that runs a workspace beside its instance (§20.3) answers here
+      // AS THE AUTHOR — the conveyance spec §7.3 leaves to the author — and
+      // only for a form it holds under a name it may hold. The Registry
+      // surface's own answer follows for everything else, and always for
+      // the legacy shape, which cannot carry an Unpublished status.
+      if (workspace && representation !== 'legacy' && (await workspace.unpublished(name, representation, reply))) {
+        return reply;
+      }
       // Spec §7.2: "a reference the Registry never resolves; only a Realm
       // holding its content can". Spec §7.3, §9.3: the Registry SHALL NOT
       // hold, serve, or answer for unpublished content — so this is not a
@@ -327,13 +372,14 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
         // the JSON list above.
         const newestFirst = [...registered.versions].sort((a, b) => b.version - a.version);
         const pick = newestFirst.find((v) => v.status === 'published') ?? newestFirst[0];
+        const pill = (await heldBy([name])).get(name) ?? null;
         if (pick) {
           const resolved = await resolveVersion(db, name, pick.version);
           if (resolved) {
-            return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions));
+            return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions, pill));
           }
         }
-        return reply.type(MEDIA.html).send(renderVersionList(body));
+        return reply.type(MEDIA.html).send(renderVersionList(body, pill));
       }
       return reply.type(mediaTypeFor(representation)).send(body);
     }
@@ -353,7 +399,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       reply.header('cache-control', 'no-cache').header('vary', 'Accept');
       reply.header('x-cp-status', resolved.status);
       if (resolved.grandfathered) reply.header('x-cp-grandfathered', 'true');
-      return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions));
+      return reply.type(MEDIA.html).send(renderVersion(resolved, registered.versions, (await heldBy([name])).get(name) ?? null));
     }
 
     const etag = versionETag(resolved.content_hash, representation);
@@ -427,7 +473,9 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       catalog: `/profiles?prefix=${tlp}`,
     };
 
-    if (representation === 'html' && renderHtml) return reply.type(MEDIA.html).send(renderAllocation(body));
+    if (representation === 'html' && renderHtml) {
+      return reply.type(MEDIA.html).send(renderAllocation(body, await heldBy(body.names.map((n) => n.name))));
+    }
     return reply.type(representation === 'spec2026' ? MEDIA.spec2026 : MEDIA.legacy).send(body);
   }
 
@@ -534,6 +582,11 @@ const SITE_STYLE = `
   a.pill:hover{border-color:var(--blue);color:var(--blue);text-decoration:none}
   .pill.current{border-color:var(--blue);background:var(--panel);color:var(--blue-ink);font-weight:650}
   .pill .dep{color:#b45309}
+  /* The workspace's form (§20.3): set apart from the versions it is not one of. */
+  .pill.unpublished{border-style:dashed;color:#b45309}
+  a.pill.unpublished:hover{border-color:#b45309;color:#9a3412}
+  .pill.unpublished.current{border-color:#b45309;background:#fff7ed;color:#9a3412;font-weight:650}
+  .callout.unpublished{border-left-color:#b45309;background:#fff7ed}
   details{margin:0 0 22px}summary{cursor:pointer;color:var(--muted);font-size:.95rem;padding:4px 2px}
   details .card{margin-top:12px}
   ul{margin:0 0 1.1rem 1.4rem}li{margin-bottom:.45rem}
@@ -595,6 +648,7 @@ export const SITE_NAV: readonly { id: string; label: string; href: string }[] = 
 /** This host's own surfaces, which exist nowhere else. */
 const SERVICE_NAV: readonly { id: string; label: string; href: string }[] = [
   { id: 'catalog', label: 'Catalog', href: '/profiles' },
+  { id: 'workspace', label: 'Workspace', href: '/workspace' },
   { id: 'account', label: 'Account', href: '/account' },
 ];
 
@@ -603,7 +657,13 @@ export function enableAccountNav(): void {
   accountNav = true;
 }
 
-export type NavId = 'registry' | 'catalog' | 'account' | 'legal' | 'about';
+/** The Workspace link appears only on a host that runs one beside its instance (§20.3). */
+let workspaceNav = false;
+export function enableWorkspaceNav(): void {
+  workspaceNav = true;
+}
+
+export type NavId = 'registry' | 'catalog' | 'workspace' | 'account' | 'legal' | 'about';
 
 function chrome(title: string, active: NavId | null, body: string): string {
   const nav = (id: string, href: string, label: string) =>
@@ -620,7 +680,7 @@ function chrome(title: string, active: NavId | null, body: string): string {
     ${SITE_NAV.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
   </ul></nav>
   <nav class="service-nav" aria-label="Registry"><ul>
-    ${SERVICE_NAV.filter((i) => i.id !== 'account' || accountNav)
+    ${SERVICE_NAV.filter((i) => (i.id !== 'account' || accountNav) && (i.id !== 'workspace' || workspaceNav))
       .map((i) => nav(i.id, i.href, i.label))
       .join('\n    ')}
   </ul></nav>
@@ -683,32 +743,53 @@ function attributeTable(keys: string[], items: Record<string, unknown>[]): strin
   return `<table class="attrs"><colgroup>${cols}</colgroup><tr>${head}</tr>${rows}</table>`;
 }
 
-function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string {
-  // The page presents the ANSWER (§19.1): current Status, Owner and Website
-  // over the frozen content, exactly as the machine shapes answer.
-  const document = presentVersion(version).document as {
-    Header?: Record<string, unknown>;
-    Properties?: Record<string, unknown[]>;
-    Channels?: Record<string, unknown>[];
-  };
-  const header = document.Header ?? {};
-  const properties = document.Properties ?? {};
-  const channels = Array.isArray(document.Channels) ? document.Channels : [];
-
-  // The version switcher: every version of the name, newest first, with its
-  // publication date and status — plain links, no scripts. The one being
-  // viewed is marked rather than linked.
-  const strip = !all || all.length === 0 ? '' : `<p class="versions">${[...all]
+/**
+ * The version switcher: every version of the name, newest first, with its
+ * publication date and status — plain links, no scripts. The one being
+ * viewed is marked rather than linked. When this host holds the name's
+ * unpublished form (§20.3), it appears last, set apart: it is not a version.
+ */
+export function versionStrip(
+  name: string,
+  all: VersionSummary[] | undefined,
+  current: number | 'unpublished',
+  unpublished: UnpublishedPill | null = null,
+): string {
+  const pills = [...(all ?? [])]
     .sort((a, b) => b.version - a.version)
     .map((v) => {
       const label = `v${v.version} &middot; ${escape(new Date(v.published_at).toISOString().slice(0, 10))}${
         v.status === 'deprecated' ? ' &middot; <span class="dep">deprecated</span>' : ''
       }`;
-      return v.version === version.version
+      return v.version === current
         ? `<span class="pill current">${label}</span>`
-        : `<a class="pill" href="/${escape(version.name)}:${v.version}">${label}</a>`;
-    })
-    .join(' ')}</p>`;
+        : `<a class="pill" href="/${escape(name)}:${v.version}">${label}</a>`;
+    });
+  if (unpublished) {
+    const label = `Unpublished${unpublished.note ? ` &middot; ${escape(unpublished.note)}` : ''}`;
+    pills.push(
+      current === 'unpublished'
+        ? `<span class="pill current unpublished">${label}</span>`
+        : `<a class="pill unpublished" href="${escape(unpublished.href)}">${label}</a>`,
+    );
+  }
+  return pills.length === 0 ? '' : `<p class="versions">${pills.join(' ')}</p>`;
+}
+
+/**
+ * The document itself — Header, Properties, Channels — every attribute of
+ * every one, nothing dropped (§19.1). Shared by the version page and by the
+ * workspace's page for an unpublished form (§20.3), so the two read alike
+ * and neither summarizes.
+ */
+export function documentSections(document: {
+  Header?: Record<string, unknown>;
+  Properties?: Record<string, unknown[]>;
+  Channels?: Record<string, unknown>[];
+}): string {
+  const header = document.Header ?? {};
+  const properties = document.Properties ?? {};
+  const channels = Array.isArray(document.Channels) ? document.Channels : [];
 
   // Website is a pointer (spec §6.6 NOTE); a browser should be able to follow
   // it. Only http(s) values become links — anything else is shown as text.
@@ -756,6 +837,16 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
       Channels are fixed by the first published version (spec §6.5, §6.2).</p>`;
   })();
 
+  return `<h2>Header</h2><table>${headerRows}</table>
+     <h2>Properties</h2>${roleTables}
+     ${channelTable}`;
+}
+
+function renderVersion(version: ResolvedVersion, all?: VersionSummary[], unpublished: UnpublishedPill | null = null): string {
+  // The page presents the ANSWER (§19.1): current Status, Owner and Website
+  // over the frozen content, exactly as the machine shapes answer.
+  const document = presentVersion(version).document as Parameters<typeof documentSections>[0];
+
   const shortfall =
     version.missing_header_fields.length > 0
       ? `<p><strong>This version does not carry every REQUIRED Header field (spec §6.4):</strong>
@@ -768,11 +859,9 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
     `<h1><code>cp:${escape(version.name)}:${version.version}</code></h1>
      <p>Status: <strong>${escape(version.status)}</strong>${version.grandfathered ? ' · grandfathered' : ''}
      ${version.pub_date_approximate ? ' · publication date approximate' : ''}</p>
-     ${strip}
+     ${versionStrip(version.name, all, version.version, unpublished)}
      ${shortfall}
-     <h2>Header</h2><table>${headerRows}</table>
-     <h2>Properties</h2>${roleTables}
-     ${channelTable}
+     ${documentSections(document)}
      <div class="raw"><strong>The contract is the document, not this page.</strong>
        <code>GET /${escape(version.name)}:${version.version}</code>
        with <code>Accept: application/cp+json; profile=2026</code>.
@@ -780,11 +869,14 @@ function renderVersion(version: ResolvedVersion, all?: VersionSummary[]): string
   );
 }
 
-function renderVersionList(body: {
-  name: string;
-  registered: Date;
-  versions: { version: number; status: string; published: Date; href: string }[];
-}): string {
+function renderVersionList(
+  body: {
+    name: string;
+    registered: Date;
+    versions: { version: number; status: string; published: Date; href: string }[];
+  },
+  unpublished: UnpublishedPill | null = null,
+): string {
   const rows = body.versions
     .map(
       (v) =>
@@ -798,23 +890,35 @@ function renderVersionList(body: {
     body.name,
     `<h1><code>cp:${escape(body.name)}</code></h1>
      <p>Registered ${escape(new Date(body.registered).toISOString().slice(0, 10))}.</p>
+     ${unpublished ? versionStrip(body.name, undefined, -1, unpublished) : ''}
      ${body.versions.length === 0
-       ? '<p>No published versions. The name is registered; its working document lives with its author (spec §7.3).</p>'
+       ? unpublished
+         ? '<p>No published versions. The name is registered; its unpublished form is held in the workspace on this host (§20.3) — the pill above.</p>'
+         : '<p>No published versions. The name is registered; its working document lives with its author (spec §7.3).</p>'
        : `<table><tr><th>Version</th><th>Status</th><th>Published</th></tr>${rows}</table>`}`,
   );
 }
 
-function renderAllocation(body: {
-  tlp: string;
-  holder: string | null;
-  names: { name: string; versions: { version: number; status: string }[]; href: string }[];
-}): string {
+/** "Unpublished" in a listing — a link to the form when this host holds it (§20.3), plain text otherwise. */
+function unpublishedCell(name: string, held: Map<string, UnpublishedPill>): string {
+  const pill = held.get(name);
+  return pill ? `<a class="pill unpublished" href="${escape(pill.href)}">Unpublished</a>` : '<em>Unpublished</em>';
+}
+
+function renderAllocation(
+  body: {
+    tlp: string;
+    holder: string | null;
+    names: { name: string; versions: { version: number; status: string }[]; href: string }[];
+  },
+  held: Map<string, UnpublishedPill> = new Map(),
+): string {
   const rows = body.names
     .map(
       (n) =>
         `<tr><td><a href="${escape(n.href)}">${escape(n.name)}</a></td><td>${
-          n.versions.length === 0 ? '<em>Unpublished</em>' : n.versions.map((v) => v.version).join(', ')
-        }</td></tr>`,
+          n.versions.length === 0 ? unpublishedCell(n.name, held) : n.versions.map((v) => v.version).join(', ')
+        }${n.versions.length > 0 && held.has(n.name) ? ` &middot; ${unpublishedCell(n.name, held)}` : ''}</td></tr>`,
     )
     .join('');
 
@@ -916,6 +1020,7 @@ function renderCatalog(
     next?: string;
     prev?: string;
   },
+  held: Map<string, UnpublishedPill> = new Map(),
 ): string {
   const { q, prefix, offset } = body.query;
 
@@ -926,9 +1031,9 @@ function renderCatalog(
          <td>${escape(e.title ?? '')}</td>
          <td>${
            e.versions.length === 0
-             ? '<em>Unpublished</em>'
+             ? unpublishedCell(e.name, held)
              : e.versions.map((v) => `${v.version}${v.status === 'deprecated' ? ' (deprecated)' : ''}`).join(', ')
-         }</td></tr>`,
+         }${e.versions.length > 0 && held.has(e.name) ? ` &middot; ${unpublishedCell(e.name, held)}` : ''}</td></tr>`,
     )
     .join('');
 

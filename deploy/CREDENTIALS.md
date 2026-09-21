@@ -130,3 +130,15 @@ The same commands work on a Mac against `DATABASE_URL` in `.env`, and `/account`
 `http://localhost:8082/account` with the six variables in `.env` (the localhost callbacks are
 registered at both providers). Point Claude Desktop's MCP config at whichever token and host
 you mean it to act on — the production token acts on canon.
+
+## The workspace credential (design §20.3) — on an instance, never on canon
+
+An instance that holds its organization's unpublished forms beside its mirror checks exactly
+one credential of its own: `CP_WORKSPACE_TOKEN` (or `CP_WORKSPACE_TOKENS` as `label=token,…`)
+with `CP_WORKSPACE_PRINCIPAL`, in the instance's environment, for `PUT` and `DELETE
+/<name>:unpublished` only. It has no scopes — there is one act — and its reach is not on the
+token: `WORKSPACE_ORGS` fixes what the host will hold, so a leaked token can overwrite one
+organization's drafts on that organization's host and nothing else. Two tokens with two
+labels tell an author's saves from an assistant's in `updated_by`. The host never holds a
+canon token: publishing stays the person's act at `cp.cnscp.io`. See `deploy/INSTANCE.md`.
+

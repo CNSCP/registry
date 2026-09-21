@@ -17,6 +17,7 @@
     "test:unit": "node --test --experimental-strip-types test/names.test.ts test/authorizes.test.ts test/policy-and-seed.test.ts test/serialization.test.ts test/spec2026.test.ts test/import.test.ts test/routes.test.ts",
     "test:integration": "node --test --experimental-strip-types test/integration.test.ts test/profiles.integration.test.ts test/resolution.test.ts test/catalog.test.ts test/allocation.test.ts test/authoring.test.ts test/seam-isolation.test.ts test/mcp.test.ts test/distribution.test.ts test/credentials.test.ts",
     "migrate": "node-pg-migrate -j js -m migrations",
+    "migrate:workspace": "node-pg-migrate -j js -m migrations/workspace -t pgmigrations_workspace",
     "seed": "node --env-file-if-exists=.env --experimental-strip-types src/seed/run.ts",
     "dev": "node --env-file-if-exists=.env --watch --experimental-strip-types src/server.ts",
     "start": "node --env-file-if-exists=.env --experimental-strip-types src/server.ts",

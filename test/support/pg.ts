@@ -25,6 +25,9 @@ import { dirname, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const MIGRATIONS_DIR = resolve(here, '../../migrations');
+/** The workspace's own set (§20.3) — applied to instances only, recorded in its own table. */
+export const WORKSPACE_MIGRATIONS_DIR = resolve(here, '../../migrations/workspace');
+export const WORKSPACE_MIGRATIONS_TABLE = 'pgmigrations_workspace';
 
 export type Harness = {
   pool: pg.Pool;
@@ -59,8 +62,12 @@ async function startServer(db: PGlite): Promise<{ server: PGLiteSocketServer; po
   throw new Error('no free port for the test database after 20 attempts');
 }
 
-/** Boot an empty database and apply every migration to it. */
-export async function freshDatabase(): Promise<Harness> {
+/**
+ * Boot an empty database and apply every migration to it. `workspace: true`
+ * also applies the workspace set, as `npm run migrate:workspace` does on an
+ * instance — and as canon never does.
+ */
+export async function freshDatabase(options: { workspace?: boolean } = {}): Promise<Harness> {
   const db = await PGlite.create();
   const { server, port: myPort } = await startServer(db);
 
@@ -79,6 +86,16 @@ export async function freshDatabase(): Promise<Harness> {
     // otherwise contend with the connection it is holding.
     noLock: true,
   });
+  if (options.workspace) {
+    await runner({
+      databaseUrl: connectionString,
+      dir: WORKSPACE_MIGRATIONS_DIR,
+      direction: 'up',
+      migrationsTable: WORKSPACE_MIGRATIONS_TABLE,
+      log: () => {},
+      noLock: true,
+    });
+  }
 
   const pool = new pg.Pool({ connectionString, max: 1 });
 

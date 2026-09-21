@@ -150,6 +150,14 @@ Registry instance"), and the first Phase 1 delivery:
   of the journal, writes no audit events of its own, and answers every non-GET with `405`
   and the authoritative host's URL. See [`deploy/INSTANCE.md`](deploy/INSTANCE.md);
   releasing to `cp.cnscp.io` itself is [`deploy/RELEASING.md`](deploy/RELEASING.md)
+- **The workspace beside an instance** ([`src/workspace/`](src/workspace/)) — §20.3, built
+  21 Sept: an organization's unpublished forms held on its own host next to its mirror,
+  open to read at `/<name>:unpublished`, saved under a workspace credential with `If-Match`,
+  held only for names the organization holds and for `test.*` (spec §7.1), never in the
+  feed, and marked on every answer so nothing can mistake a draft for a version. The
+  Registry surface of a host running one stays byte-identical to canon (proven in test).
+  Its table lives in its own migration set (`npm run migrate:workspace`), so canon's schema
+  never gains it
 - **`npm run verify-journal -- https://cp.cnscp.io --resolve`** — the same verifier as a
   standalone tool: walks the chain, then checks that every published version the host
   *serves* hashes to what its act *recorded*. No state, no credential — spec §9.3's
@@ -298,8 +306,13 @@ src/
     routes.ts        /distribution/*, and the instance's 405 refusals
     follower.ts      bootstrap + sync: verify, apply, copy, advance — one transaction per page
     verify-cli.ts    npm run verify-journal
-  instance-server.ts a local instance: resolution + follower (§7.4)
-test/                387 tests
+  instance-server.ts a local instance: resolution + follower (§7.4), and the workspace beside it (§20.3)
+  workspace/
+    config.ts        WORKSPACE_ORGS / WORKSPACE_TEST
+    credential.ts    the workspace credential (environment form; one function, so the next form is a drop-in)
+    store.ts         qualifies · save/get/remove with If-Match · presentForm · movedOnSince · sweep
+    routes.ts        GET/PUT/DELETE /<name>:unpublished, /workspace, the pill and the banner
+test/                545 tests
 ```
 
 ## Three disciplines the code depends on
