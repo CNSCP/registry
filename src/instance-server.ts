@@ -26,6 +26,8 @@
  *   WORKSPACE_TEST          `true` to admit test.* forms (spec §7.1)
  *   CP_WORKSPACE_TOKEN      the workspace credential (or CP_WORKSPACE_TOKENS as label=token,…)
  *   CP_WORKSPACE_PRINCIPAL  the person answerable for saves
+ *   FORWARD_WRITES          `true` to relay writes on Profile paths to the upstream with the
+ *                           caller's own credential (§20.3) instead of answering 405
  */
 
 import Fastify from 'fastify';
@@ -33,6 +35,7 @@ import { getPool } from './db.ts';
 import { registerResolutionRoutes } from './part-three/routes.ts';
 import { bootstrap, sync } from './distribution/follower.ts';
 import { registerInstanceRefusals } from './distribution/routes.ts';
+import { createForwarder, registerWriteFallthrough } from './distribution/forward.ts';
 import { workspaceConfigFromEnv } from './workspace/config.ts';
 import { workspaceCredentialsFromEnv } from './workspace/credential.ts';
 import { createWorkspace } from './workspace/routes.ts';
@@ -59,8 +62,41 @@ const caughtUp = await sync(pool);
 app.log.info(`journal at seq ${caughtUp.cursor.seq}; ${caughtUp.applied} act(s) applied`);
 
 const html = process.env['RENDER_HTML'] !== 'false';
+
+// Forwarding (§20.3): the host relays a write on a Profile path to the
+// authoritative store with the CALLER'S OWN credential, and holds none of its
+// own. Off unless asked for; §4.4's 405 is what an instance answers otherwise.
+const forwarding = /^(true|1|yes)$/i.test((process.env['FORWARD_WRITES'] ?? '').trim());
+const forwarder = forwarding ? createForwarder({ upstream }) : null;
+if (forwarding) app.log.info(`forwarding: writes on Profile paths relay to ${upstream} with the caller's own credential`);
+
+// The workspace's catch-up (§20.3): a name registered at canon a moment ago
+// is not in this mirror until the next sync, and refusing its form as
+// "not registered" would be this host reporting its own lag as a fact about
+// the namespace. Rate-limited, because a stream of unknown names must not
+// become a stream of upstream calls.
+let lastCatchUp = 0;
+const CATCH_UP_EVERY_MS = 5_000;
+const catchUp = async (): Promise<void> => {
+  if (Date.now() - lastCatchUp < CATCH_UP_EVERY_MS) return;
+  lastCatchUp = Date.now();
+  try {
+    await sync(pool);
+  } catch (error) {
+    app.log.warn(error, 'workspace: catch-up sync failed; answering from the mirror as it stands');
+  }
+};
+
 const workspace = workspaceConfig
-  ? createWorkspace({ db: pool, config: workspaceConfig, credentials: workspaceCredentials, upstream, html })
+  ? createWorkspace({
+      db: pool,
+      config: workspaceConfig,
+      credentials: workspaceCredentials,
+      upstream,
+      html,
+      catchUp,
+      ...(forwarder ? { onRegistryWrite: forwarder } : {}),
+    })
   : null;
 
 if (workspaceConfig) {
@@ -82,7 +118,8 @@ await registerResolutionRoutes(app, {
 });
 
 workspace?.register(app);
-registerInstanceRefusals(app, upstream);
+if (forwarder) registerWriteFallthrough(app, forwarder);
+else registerInstanceRefusals(app, upstream);
 
 const interval = Number(process.env['SYNC_INTERVAL_SECONDS'] ?? 60);
 if (interval > 0) {

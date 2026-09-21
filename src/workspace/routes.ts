@@ -31,6 +31,7 @@ import { MEDIA, etagMatches, negotiate } from '../part-three/http.ts';
 import { documentSections, enableWorkspaceNav, escape, page, splitReference, versionStrip, type UnpublishedPill, type WorkspaceHooks } from '../part-three/routes.ts';
 import { resolveName, type VersionSummary } from '../part-three/store.ts';
 import { instanceRefusal } from '../distribution/routes.ts';
+import type { WriteHandler } from '../distribution/forward.ts';
 import { mayWriteWorkspace, signature, type WorkspaceCredential } from './credential.ts';
 import {
   formETag,
@@ -54,6 +55,28 @@ export type WorkspaceDeps = {
   credentials: readonly WorkspaceCredential[];
   /** The authoritative host, named in the refusal a write to a Registry path still gets here. */
   upstream: string;
+  /**
+   * Bring the mirror up to date, if this host follows one (§20.1 `sync`).
+   *
+   * A name is registered at the AUTHORITATIVE store, and this host learns of
+   * it on its next sync — up to a sync interval later. So an author who has
+   * just claimed a name and turns to save its form would be told the name is
+   * not registered, which is false, and would be told it by the host that is
+   * merely behind. `not-registered` is the one refusal here that a stale
+   * mirror can invent, so it is the one refusal worth spending an upstream
+   * call to be sure of: the workspace catches up once and asks again before
+   * refusing. Nothing is trusted that was not verified — this is the ordinary
+   * follower path (§20.1), hash checks and all.
+   */
+  catchUp?: () => Promise<void>;
+  /**
+   * What a non-`GET` on a REGISTRY path gets when it arrives at one of the
+   * workspace's own routes (`PUT`/`DELETE /<ref>` with a ref that is not
+   * `:unpublished`). The default is §4.4's refusal naming the authoritative
+   * host; a forwarder relays it instead (§20.3). Either way the workspace
+   * itself never acts on the namespace.
+   */
+  onRegistryWrite?: WriteHandler;
   html?: boolean;
 };
 
@@ -94,6 +117,7 @@ async function noteFor(db: Queryable, form: WorkspaceForm, q: Qualification): Pr
 export function createWorkspace(deps: WorkspaceDeps): Workspace {
   const { db, config, credentials, upstream } = deps;
   const renderHtml = deps.html ?? true;
+  const onRegistryWrite: WriteHandler = deps.onRegistryWrite ?? (async (_request, reply) => instanceRefusal(reply, upstream));
 
   function mark(reply: FastifyReply, form: WorkspaceForm): void {
     reply
@@ -177,12 +201,16 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
     app.put<{ Params: { ref: string } }>('/:ref', async (request, reply) => {
       const { name, version } = splitReference(request.params.ref);
-      if (version !== 'unpublished') return instanceRefusal(reply, upstream);
+      if (version !== 'unpublished') return onRegistryWrite(request, reply);
 
       const credential = authenticate(request, reply);
       if (!credential) return reply;
 
-      const q = await qualifies(db, config, name);
+      let q = await qualifies(db, config, name);
+      if (!q.ok && q.reason === 'not-registered' && deps.catchUp) {
+        await deps.catchUp();
+        q = await qualifies(db, config, name);
+      }
       if (!q.ok) return qualificationRefusal(reply, q);
 
       const ifMatch = request.headers['if-match'];
@@ -212,7 +240,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
     app.delete<{ Params: { ref: string } }>('/:ref', async (request, reply) => {
       const { name, version } = splitReference(request.params.ref);
-      if (version !== 'unpublished') return instanceRefusal(reply, upstream);
+      if (version !== 'unpublished') return onRegistryWrite(request, reply);
 
       const credential = authenticate(request, reply);
       if (!credential) return reply;

@@ -142,3 +142,10 @@ organization's drafts on that organization's host and nothing else. Two tokens w
 labels tell an author's saves from an assistant's in `updated_by`. The host never holds a
 canon token: publishing stays the person's act at `cp.cnscp.io`. See `deploy/INSTANCE.md`.
 
+**Through a forwarding host (§20.3).** An instance with `FORWARD_WRITES=true` relays your acts
+to `cp.cnscp.io` carrying the credential *you* presented; it holds none of its own and can act
+for nobody. Your principal appears in the journal exactly as it would had you called canon
+directly, because it is the same act by the same credential — only the route differs. The one
+thing to decide deliberately is that your token transits that host, which is why forwarding is
+off unless asked for.
+

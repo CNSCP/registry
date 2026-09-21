@@ -110,8 +110,9 @@ describe('the toolset', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
-      'allocate_tlp', 'check_publishable', 'check_registration', 'deprecate', 'lint_profile',
-      'publish', 'register_name', 'release_name', 'resolve', 'update_stewardship',
+      'allocate_tlp', 'check_publishable', 'check_registration', 'deprecate', 'get_unpublished',
+      'lint_profile', 'publish', 'register_name', 'release_name', 'resolve', 'save_unpublished',
+      'update_stewardship',
     ]);
   });
 
@@ -131,6 +132,21 @@ describe('the toolset', () => {
     // lint as permission and a warning as a refusal (§16.1).
     assert.match(byName['lint_profile']!.description ?? '', /advisory|never adds a refusal ground/);
     assert.match(byName['lint_profile']!.description ?? '', /can never be removed or redefined/);
+    // The workspace tools must not read as a second way to publish, and must
+    // teach the co-author guard — the tool description IS the documentation.
+    assert.match(byName['save_unpublished']!.description ?? '', /NOT\s+publication|not\s+publication/);
+    assert.match(byName['save_unpublished']!.description ?? '', /if_match/);
+    assert.match(byName['get_unpublished']!.description ?? '', /author's own host|Needs no credential/);
+    assert.doesNotMatch(byName['save_unpublished']!.description ?? '', /IRREVERSIBLE/);
+  });
+
+  test('the workspace tools are configured apart from the Registry, and say so when they are not', async () => {
+    // This server runs with no CP_WORKSPACE_TOKEN: reads would go to
+    // CP_WORKSPACE_URL (defaulting to the Registry), saves refuse locally
+    // rather than sending a Registry token to a workspace.
+    const saved = await tool('save_unpublished', { name: 'padi.mcp.ws', document: { Header: { Name: 'padi.mcp.ws' } } });
+    assert.equal(saved.isError, true);
+    assert.match(saved.raw, /CP_WORKSPACE_TOKEN is not set/);
   });
 });
 

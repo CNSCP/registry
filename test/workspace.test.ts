@@ -24,6 +24,9 @@ import { dirname, resolve } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type pg from 'pg';
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
 import { freshDatabase, type Harness } from './support/pg.ts';
 import { applySeed } from '../src/seed/seed.ts';
 import { parseCorpus } from '../src/profile/legacy.ts';
@@ -36,6 +39,7 @@ import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { transferTlp } from '../src/part-one/transfer.ts';
 import { bootstrap, sync, type Fetch } from '../src/distribution/follower.ts';
 import { createWorkspace } from '../src/workspace/routes.ts';
+import { createForwarder, registerWriteFallthrough } from '../src/distribution/forward.ts';
 import { sweep } from '../src/workspace/store.ts';
 import { workspaceCredentialsFromEnv, mayWriteWorkspace } from '../src/workspace/credential.ts';
 import { workspaceConfigFromEnv } from '../src/workspace/config.ts';
@@ -147,7 +151,9 @@ before(async () => {
     CP_WORKSPACE_TOKENS: `anto=${WS_TOKEN},claude=${WS_TOKEN_2}`,
     CP_WORKSPACE_PRINCIPAL: 'anto@padi.io',
   });
-  const workspace = createWorkspace({ db: instance.pool, config, credentials, upstream: UPSTREAM });
+  // The instance follows the upstream, so the workspace can catch up before
+  // it refuses a name as unregistered (§20.3).
+  const workspace = createWorkspace({ db: instance.pool, config, credentials, upstream: UPSTREAM, catchUp });
 
   instanceApp = Fastify();
   await registerResolutionRoutes(instanceApp, { db: instance.pool, role: 'instance', upstream: UPSTREAM, workspace: workspace.hooks });
@@ -368,6 +374,20 @@ describe('what the workspace holds (§20.3)', () => {
     assert.equal(still.statusCode, 200);
   });
 
+  test('a name registered a moment ago: the workspace catches up rather than reporting its own lag', async () => {
+    const put = await upstreamApp.inject({ method: 'PUT', url: '/padi.justnow', headers: auth() });
+    assert.equal(put.statusCode, 201, put.body);
+    // Deliberately NO sync: the mirror does not know this name yet.
+    const behind = await instance.pool.query(`SELECT 1 FROM profile WHERE name = 'padi.justnow'`);
+    assert.equal(behind.rowCount, 0, 'the mirror is behind, which is the point of this test');
+
+    const saved = await instanceApp.inject({ method: 'PUT', url: '/padi.justnow:unpublished', headers: ws(), payload: document('padi.justnow', [p1]) });
+    assert.equal(saved.statusCode, 201, saved.body);
+
+    const caught = await instance.pool.query(`SELECT 1 FROM profile WHERE name = 'padi.justnow'`);
+    assert.equal(caught.rowCount, 1, 'it caught up through the ordinary verified follower path');
+  });
+
   test('no third class: not another organization\'s name, not an unregistered one, not a malformed one', async () => {
     const theirs = await instanceApp.inject({ method: 'PUT', url: '/onuma.building:unpublished', headers: ws(), payload: document('onuma.building', [p1]) });
     assert.equal(theirs.statusCode, 403, theirs.body);
@@ -574,5 +594,177 @@ describe('without a workspace (§20.1)', () => {
     } finally {
       await plain.close();
     }
+  });
+});
+
+describe('forwarding beside the workspace (§20.3)', () => {
+  /** The forwarder's fetch, over app.inject: the real relay, no real socket. */
+  const relayFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input).slice(UPSTREAM.length);
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) headers[k] = v;
+    const r = await upstreamApp.inject({
+      method: (init?.method ?? 'GET') as 'GET',
+      url,
+      headers,
+      ...(init?.body === undefined ? {} : { payload: init.body as string }),
+    });
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(r.headers)) if (v !== undefined) out[k] = String(v);
+    return new Response(r.statusCode === 204 || r.statusCode === 304 ? null : r.body, { status: r.statusCode, headers: out });
+  };
+
+  let app: FastifyInstance;
+
+  before(async () => {
+    const forwarder = createForwarder({ upstream: UPSTREAM, fetch: relayFetch });
+    const workspace = createWorkspace({
+      db: instance.pool,
+      config,
+      credentials: [{ token: WS_TOKEN, label: 'anto', principal: 'anto@padi.io' }],
+      upstream: UPSTREAM,
+      onRegistryWrite: forwarder,
+    });
+    app = Fastify();
+    await registerResolutionRoutes(app, { db: instance.pool, role: 'instance', upstream: UPSTREAM, workspace: workspace.hooks });
+    workspace.register(app);
+    registerWriteFallthrough(app, forwarder);
+    await app.ready();
+  });
+
+  after(async () => {
+    await app.close();
+  });
+
+  test('one host, two surfaces, two credentials: the act goes to canon, the draft stays here', async () => {
+    // The ACT — registration — with the CANON token, through this host.
+    const registered = await app.inject({ method: 'PUT', url: '/padi.fwd', headers: auth() });
+    assert.equal(registered.statusCode, 201, registered.body);
+    assert.equal(registered.headers['x-cp-forwarded-to'], UPSTREAM);
+    // It happened at canon, not here: canon answers for it before this
+    // instance has even synced.
+    const atCanon = await upstreamApp.inject({ method: 'GET', url: '/padi.fwd/registration' });
+    assert.equal(atCanon.statusCode, 200, 'the registration is at the authoritative store');
+    await catchUp();
+
+    // The DRAFT — same host, same path shape, the WORKSPACE token, and it
+    // never leaves this machine.
+    const saved = await app.inject({ method: 'PUT', url: '/padi.fwd:unpublished', headers: ws(), payload: document('padi.fwd', [p1]) });
+    assert.equal(saved.statusCode, 201, saved.body);
+    assert.equal(saved.headers['x-cp-surface'], 'workspace');
+    assert.equal(saved.headers['x-cp-forwarded-to'], undefined, 'a draft is never relayed anywhere');
+    const notAtCanon = await upstreamApp.inject({ method: 'GET', url: '/padi.fwd:unpublished', headers: { accept: SPEC } });
+    assert.equal(notAtCanon.statusCode, 404, 'canon holds no unpublished content (spec §7.3)');
+  });
+
+  test('the workspace credential is not a canon credential, and canon says so', async () => {
+    const wrong = await app.inject({ method: 'PUT', url: '/padi.fwd.two', headers: ws() });
+    assert.equal(wrong.statusCode, 401, 'relayed, and refused by canon — not by this host');
+    assert.equal(wrong.headers['x-cp-forwarded-to'], UPSTREAM);
+  });
+
+  test('a rehearsal and a deprecation relay too; the operator plane does not', async () => {
+    const rehearsal = await app.inject({
+      method: 'POST',
+      url: '/padi.fwd/publish?dry_run=true',
+      headers: auth(),
+      payload: document('padi.fwd', [p1]),
+    });
+    assert.equal(rehearsal.statusCode, 200, rehearsal.body);
+    assert.equal((rehearsal.json() as { publishable: boolean }).publishable, true);
+
+    const operator = await app.inject({ method: 'POST', url: '/operator/allocations', headers: auth(), payload: {} });
+    assert.equal(operator.statusCode, 405, 'the operator plane is the operator\'s, at canon');
+    assert.equal((operator.json() as { authoritative: string }).authoritative, UPSTREAM);
+  });
+
+  test('reads are untouched: the Registry surface is still byte-identical to canon', async () => {
+    assertSameSurface(await machineSurface(upstreamApp), await machineSurface(app));
+  });
+});
+
+describe('the MCP tools over the two surfaces (§20.3)', () => {
+  let canonUrl: string;
+  let workspaceUrl: string;
+  let client: Client;
+
+  before(async () => {
+    canonUrl = await upstreamApp.listen({ port: 0, host: '127.0.0.1' });
+    workspaceUrl = await instanceApp.listen({ port: 0, host: '127.0.0.1' });
+    client = new Client({ name: 'test-assistant', version: '0.0.0' });
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['--experimental-strip-types', resolve(here, '../src/mcp/server.ts')],
+        env: {
+          ...process.env,
+          CP_REGISTRY_URL: canonUrl,
+          CP_REGISTRY_TOKEN: OPERATOR.token,
+          CP_WORKSPACE_URL: workspaceUrl,
+          CP_WORKSPACE_TOKEN: WS_TOKEN,
+        },
+      }),
+    );
+  });
+
+  after(async () => {
+    await client.close();
+  });
+
+  const text = async (name: string, args: Record<string, unknown>) => {
+    const r = await client.callTool({ name, arguments: args });
+    const content = r.content as { type: string; text: string }[];
+    return { parts: content.map((c) => c.text), raw: content.map((c) => c.text).join('\n'), isError: r.isError === true };
+  };
+
+  test('register_name with a document: two calls, two surfaces, in order', async () => {
+    const out = await text('register_name', { name: 'padi.mcp.form', document: document('padi.mcp.form', [p1]) });
+    assert.equal(out.isError, false, out.raw);
+    assert.equal(out.parts.length, 2, 'the two acts are reported separately');
+    assert.match(out.parts[0] ?? '', /Registered at/);
+    assert.match(out.parts[1] ?? '', /Saved to the workspace at/);
+
+    const atCanon = await upstreamApp.inject({ method: 'GET', url: '/padi.mcp.form/registration' });
+    assert.equal(atCanon.statusCode, 200);
+    assert.deepEqual((atCanon.json() as { versions: unknown[] }).versions, [], 'registered, nothing published');
+    // No manual sync here on purpose: the save landed a moment after the
+    // registration, before any scheduled sync, and the workspace caught up
+    // for itself rather than reporting its own lag as a fact (§20.3).
+    const held = await instanceApp.inject({ method: 'GET', url: '/padi.mcp.form:unpublished', headers: { accept: SPEC } });
+    assert.equal(held.statusCode, 200, 'and the form is in the workspace');
+  });
+
+  test('get_unpublished hands back the ETag, and save_unpublished honours it', async () => {
+    const read = await text('get_unpublished', { name: 'padi.mcp.form' });
+    assert.equal(read.isError, false, read.raw);
+    const etag = /ETag: (".*?")/.exec(read.raw)?.[1];
+    assert.ok(etag, `no ETag in: ${read.raw.slice(0, 200)}`);
+    assert.match(read.raw, /pass this as if_match/);
+    assert.match(read.raw, /"Status":"Unpublished"/);
+
+    const blind = await text('save_unpublished', { name: 'padi.mcp.form', document: document('padi.mcp.form', [p1, p2]) });
+    assert.equal(blind.isError, true, 'a blind save over an existing form is refused');
+    assert.match(blind.raw, /428|precondition-required/);
+
+    const saved = await text('save_unpublished', {
+      name: 'padi.mcp.form',
+      document: document('padi.mcp.form', [p1, p2]),
+      if_match: etag,
+    });
+    assert.equal(saved.isError, false, saved.raw);
+
+    const stale = await text('save_unpublished', {
+      name: 'padi.mcp.form',
+      document: document('padi.mcp.form', [p1]),
+      if_match: etag,
+    });
+    assert.equal(stale.isError, true, 'the ETag is spent: someone (here, itself) has saved since');
+    assert.match(stale.raw, /412|precondition-failed/);
+  });
+
+  test('the workspace tools reach only the workspace: a name held elsewhere is refused there', async () => {
+    const theirs = await text('save_unpublished', { name: 'onuma.building', document: document('onuma.building', [p1]) });
+    assert.equal(theirs.isError, true);
+    assert.match(theirs.raw, /not-held|Onuma/);
   });
 });

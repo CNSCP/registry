@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.16.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.17.
 
 **The normative anchor is the CNS/CP 2026 revision, published 16 September 2026 at
 [github.com/CNSCP/specification](https://github.com/CNSCP/specification).** It is pinned by
@@ -158,6 +158,11 @@ Registry instance"), and the first Phase 1 delivery:
   Registry surface of a host running one stays byte-identical to canon (proven in test).
   Its table lives in its own migration set (`npm run migrate:workspace`), so canon's schema
   never gains it
+- **Forwarding** ([`src/distribution/forward.ts`](src/distribution/forward.ts)) — §20.3,
+  built 21 Sept: `FORWARD_WRITES=true` makes an instance relay a write on a Profile path to
+  the authoritative host with the **caller's own** credential and hand the answer back
+  verbatim, so an organization has one URL for its tools. A pipe: it holds no credential of
+  its own, refuses nothing, logs and keeps nothing, and relays no dotless path
 - **`npm run verify-journal -- https://cp.cnscp.io --resolve`** — the same verifier as a
   standalone tool: walks the chain, then checks that every published version the host
   *serves* hashes to what its act *recorded*. No state, no credential — spec §9.3's
@@ -304,6 +309,7 @@ src/
     journal.ts       §20.1 wire types and the PURE verifier — shared by instance, CLI and tests
     store.ts         snapshot and journal reads (audit projection / instance copy)
     routes.ts        /distribution/*, and the instance's 405 refusals
+    forward.ts       §20.3 relay: the caller's own credential to the authoritative host
     follower.ts      bootstrap + sync: verify, apply, copy, advance — one transaction per page
     verify-cli.ts    npm run verify-journal
   instance-server.ts a local instance: resolution + follower (§7.4), and the workspace beside it (§20.3)
@@ -312,7 +318,7 @@ src/
     credential.ts    the workspace credential (environment form; one function, so the next form is a drop-in)
     store.ts         qualifies · save/get/remove with If-Match · presentForm · movedOnSince · sweep
     routes.ts        GET/PUT/DELETE /<name>:unpublished, /workspace, the pill and the banner
-test/                545 tests
+test/                563 tests
 ```
 
 ## Three disciplines the code depends on

@@ -119,8 +119,102 @@ and the page says whether it has moved on since.
 
 A released or transferred name's form goes dark at once and is swept after the next sync.
 With none of the `WORKSPACE_*` / `CP_WORKSPACE_*` variables set, none of this is mounted.
-Forwarding (one URL for your tools, with your own canon token relayed as a pipe) and the
-private/public worked deployments follow in the next release.
+
+A name you registered a moment ago is not in this mirror until the next sync. The workspace
+catches up for itself before refusing a save as `not-registered`, so register-then-save works
+straight away; it does not do this for any other refusal, because no other one here can be
+invented by a stale mirror.
+
+## Forwarding: one URL for your tools (design §20.3)
+
+By default a write to a Registry path gets `405` and the authoritative host's URL — your tools
+talk to `cp.cnscp.io` for acts and to this host for drafts. With `FORWARD_WRITES=true` this host
+relays those writes instead, carrying **your own credential**, and hands back the authoritative
+host's answer verbatim with `x-cp-forwarded-to` on it. Then one URL does everything.
+
+```sh
+export FORWARD_WRITES=true
+npm run instance
+# register at canon, through this host, with YOUR canon token:
+curl -i -X PUT http://127.0.0.1:8080/acme.meter.flow -H "Authorization: Bearer $CP_REGISTRY_TOKEN"
+```
+
+What it is, exactly: a pipe. This host holds no credential for the authoritative store, so it
+can act for nobody; it refuses nothing of its own, so it can never block an act canon would
+accept; it logs and keeps nothing it relays; and you can always make the same call at
+`cp.cnscp.io` and compare. Only Profile paths are relayed — `/operator/*`, `/auth/*`, `/account`
+and every other dotless path still get the `405` — and `:unpublished` never goes anywhere,
+because it is this host's own. If the authoritative host cannot be reached you get a `502`
+naming it, which says plainly that nothing here refused your act and nothing here recorded it;
+for an irreversible act, check at canon whether it took effect before retrying.
+
+Inside a security boundary this is usually what you want: the instance becomes the one thing
+that talks out, and every tool inside points at it.
+
+## The assistant's tools (MCP)
+
+`npm run mcp` gains two tools for the workspace, and they are the only ones that carry the
+workspace credential:
+
+```jsonc
+{
+  "CP_REGISTRY_URL":    "https://cp.cnscp.io",   // or this host, when it forwards
+  "CP_REGISTRY_TOKEN":  "…",                     // your canon token: acts
+  "CP_WORKSPACE_URL":   "http://127.0.0.1:8080", // omit when CP_REGISTRY_URL forwards
+  "CP_WORKSPACE_TOKEN": "…"                      // this host's workspace credential: drafts
+}
+```
+
+`get_unpublished` reads a form (no credential needed) and hands back its ETag; `save_unpublished`
+writes one and wants that ETag as `if_match` over an existing form. `register_name` takes an
+optional document and makes the two calls in order — the act at canon, then the save here —
+reporting each separately. No tool combines them into one act, and no server ever will.
+
+## Two worked deployments
+
+**Private — inside your own network, for research, development and testing.** `test.*` forms
+are admitted here (spec §7.1: local exercise, never globally resolvable), so an implementer can
+exercise a Profile before holding a Prefix, or before the name itself should be public.
+
+```yaml
+# docker-compose.yml
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: cp, POSTGRES_DB: cp }
+    volumes: [ "cpdata:/var/lib/postgresql/data" ]
+  registry:
+    image: ghcr.io/cnscp/registry:latest
+    depends_on: [ db ]
+    environment:
+      DATABASE_URL: postgres://postgres:cp@db:5432/cp
+      UPSTREAM_URL: https://cp.cnscp.io
+      SYNC_INTERVAL_SECONDS: "60"
+      WORKSPACE_ORGS: "<your organization id>"
+      WORKSPACE_TEST: "true"          # private host: admit test.* forms
+      FORWARD_WRITES: "true"          # one URL for everything inside the boundary
+      CP_WORKSPACE_PRINCIPAL: you@example.com
+      CP_WORKSPACE_TOKENS: "you=<32+ chars>,assistant=<32+ chars>"
+    command: sh -c "npm run migrate up && npm run migrate:workspace up && npm run instance"
+    ports: [ "8080:8080" ]
+volumes: { cpdata: {} }
+```
+
+The only outbound path it needs is to `cp.cnscp.io`; nothing needs an inbound one. Two tokens
+with two labels is worth doing from the start — it is what tells your saves from your
+assistant's in `updated_by`.
+
+**Public — conveyance, as `cp.padi.io` will be.** The same image with `WORKSPACE_TEST` left
+off, because "never globally resolvable" is a statement about the Registry and a public host
+serving `test.*` at a public URL should be a choice someone made. Reads are open, which is what
+lets a testing partner exercise your Profile with no credential at all; writes take the
+workspace credential, which you give to co-authors and to nobody else. Whether to forward on a
+public host is a separate decision: it means your own canon token transits it.
+
+Either posture can follow the other rather than canon — an instance serves the journal from its
+own verified copy — which gives a boundary one egress point. Drafts do **not** replicate between
+them: unpublished content is never in the feed, so a form reaches the public host only when its
+author saves it there.
 
 ## Deprecation and stewardship reach you through the journal
 
