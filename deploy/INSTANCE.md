@@ -83,11 +83,17 @@ enters the distribution feed.
 
 ```sh
 npm run migrate:workspace up          # the workspace's own table, in its own migration set
-export WORKSPACE_ORGS=<organization id>   # from your allocation page or the snapshot; comma-separate several
+export WORKSPACE_ORGS=<organization id>   # see below; comma-separate several
 export WORKSPACE_TEST=true                # admit test.* forms — set this on a PRIVATE host; leave it off in public
 export CP_WORKSPACE_TOKEN=$(openssl rand -base64 36)   # 32+ characters; or CP_WORKSPACE_TOKENS=anto=…,assistant=…
 export CP_WORKSPACE_PRINCIPAL=you@example.com
 npm run instance
+```
+
+The organization id is in the snapshot (the allocation page shows the holder's name, not its id):
+
+```sh
+curl -s https://cp.cnscp.io/distribution/snapshot | jq -r '.allocations[] | select(.tlp=="padi") | .org_id'
 ```
 
 Then, with the document in the 2026 shape:
