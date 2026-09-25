@@ -39,7 +39,7 @@ import { createForwarder, registerWriteFallthrough } from './distribution/forwar
 import { workspaceConfigFromEnv } from './workspace/config.ts';
 import { workspaceCredentialsFromEnv } from './workspace/credential.ts';
 import { createWorkspace } from './workspace/routes.ts';
-import { holders, sweep } from './workspace/store.ts';
+import { darkForms, holders } from './workspace/store.ts';
 
 const upstream = (process.env['UPSTREAM_URL'] ?? '').replace(/\/+$/, '');
 if (!upstream) throw new Error('UPSTREAM_URL is not set. An instance follows an authoritative host; name it.');
@@ -105,8 +105,23 @@ if (workspaceConfig) {
     else app.log.warn(`workspace: organization ${org.id} is not in this instance's mirror yet; its names cannot qualify until it is`);
   }
   if (workspaceConfig.test) app.log.info('workspace: admitting test.* forms (spec §7.1)');
-  const swept = await sweep(pool, workspaceConfig);
-  if (swept.length > 0) app.log.info(`workspace: swept ${swept.length} form(s) whose names no longer qualify: ${swept.join(', ')}`);
+  await reportDark();
+}
+
+/**
+ * Say what this host holds but can no longer serve (§20.3) — and do nothing
+ * about it. Removal is deliberate; an environment variable is not a decision
+ * about somebody's only copy of their work.
+ */
+async function reportDark(): Promise<void> {
+  if (!workspaceConfig) return;
+  const dark = await darkForms(pool, workspaceConfig);
+  if (dark.length === 0) return;
+  app.log.warn(
+    `workspace: ${dark.length} form(s) held but no longer servable under this host's rules — ` +
+      `${dark.map((d) => `${d.name} (${d.reason})`).join(', ')}. ` +
+      'Nothing was deleted; remove them deliberately with DELETE /<name>:unpublished.',
+  );
 }
 
 await registerResolutionRoutes(app, {
@@ -125,13 +140,7 @@ const interval = Number(process.env['SYNC_INTERVAL_SECONDS'] ?? 60);
 if (interval > 0) {
   const timer = setInterval(() => {
     sync(pool)
-      .then(async () => {
-        // A released or transferred name's form goes dark on the next read
-        // regardless; the sweep is what removes the row (§20.3).
-        if (!workspaceConfig) return;
-        const swept = await sweep(pool, workspaceConfig);
-        if (swept.length > 0) app.log.info(`workspace: swept ${swept.join(', ')}`);
-      })
+      .then(reportDark)
       .catch((error) => app.log.error(error, 'sync failed; the cursor did not move'));
   }, interval * 1000);
   timer.unref();

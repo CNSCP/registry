@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.17.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.18.
 
 **The normative anchor is the CNS/CP 2026 revision, published 16 September 2026 at
 [github.com/CNSCP/specification](https://github.com/CNSCP/specification).** It is pinned by
@@ -316,7 +316,7 @@ src/
   workspace/
     config.ts        WORKSPACE_ORGS / WORKSPACE_TEST
     credential.ts    the workspace credential (environment form; one function, so the next form is a drop-in)
-    store.ts         qualifies · save/get/remove with If-Match · presentForm · movedOnSince · sweep
+    store.ts         qualifies · save/get/remove with If-Match · presentForm · movedOnSince · darkForms (reports; never deletes)
     routes.ts        GET/PUT/DELETE /<name>:unpublished, /workspace, the pill and the banner
 test/                563 tests
 ```

@@ -117,7 +117,11 @@ served in the legacy shape. The host holds **no canon credential** — publishin
 own act at `cp.cnscp.io`, carrying the content, exactly as before; after it, the form persists
 and the page says whether it has moved on since.
 
-A released or transferred name's form goes dark at once and is swept after the next sync.
+A released or transferred name's form goes **dark** at once — unreachable, unlisted — and is
+**kept**. Nothing on this host deletes a draft automatically, because a draft exists nowhere
+else: release frees a name, not your work. The boot and sync logs name every dark form and
+why, `/workspace` shows them to a request carrying the workspace credential, and removal is
+yours: `DELETE /<name>:unpublished`.
 With none of the `WORKSPACE_*` / `CP_WORKSPACE_*` variables set, none of this is mounted.
 
 A name you registered a moment ago is not in this mirror until the next sync. The workspace

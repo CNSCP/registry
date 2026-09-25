@@ -34,6 +34,7 @@ import { instanceRefusal } from '../distribution/routes.ts';
 import type { WriteHandler } from '../distribution/forward.ts';
 import { mayWriteWorkspace, signature, type WorkspaceCredential } from './credential.ts';
 import {
+  darkForms,
   formETag,
   getForm,
   heldForms,
@@ -44,6 +45,7 @@ import {
   qualifies,
   removeForm,
   saveForm,
+  type DarkForm,
   type Qualification,
   type WorkspaceConfig,
   type WorkspaceForm,
@@ -166,10 +168,15 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
     async summary() {
       const forms = await listForms(db, config);
+      const dark = forms.length - forms.filter((f) => f.qualification.ok).length;
       return {
         orgs: await holders(db, config),
         test: config.test,
         forms: forms.filter((f) => f.qualification.ok).length,
+        // Held but no longer servable under this host's own rules (§20.3).
+        // Surfaced here because a host that has quietly stopped serving
+        // something should say so where an operator already looks.
+        ...(dark > 0 ? { dark } : {}),
         index: WORKSPACE_PATH,
       };
     },
@@ -256,6 +263,13 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
     app.get(WORKSPACE_PATH, async (request, reply) => {
       const representation = negotiate(request.headers.accept, 'spec2026');
+      // Dark forms are shown only to a request carrying the workspace
+      // credential (§20.3). A dark form's name may never have been public —
+      // nothing under `test` is registered anywhere — and an open page is the
+      // wrong place to disclose one. The operator, who decides what to remove,
+      // is exactly the party holding that credential.
+      const operator = mayWriteWorkspace(credentials, request.headers.authorization) !== null;
+      const dark: DarkForm[] = operator ? await darkForms(db, config) : [];
       const forms = (await listForms(db, config)).filter((f) => f.qualification.ok);
       const entries = [];
       for (const form of forms) {
@@ -277,6 +291,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         orgs: await holders(db, config),
         test: config.test,
         forms: entries,
+        ...(operator ? { dark } : {}),
         note:
           'The unpublished forms held in the workspace on this host, as their authors saved them (§20.3). None is a version: the Registry holds no unpublished content (spec §7.3), and nothing here is in the distribution feed.',
       };

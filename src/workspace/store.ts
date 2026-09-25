@@ -292,20 +292,57 @@ export async function listForms(db: Queryable, config: WorkspaceConfig): Promise
   return out;
 }
 
+export type DarkForm = {
+  name: string;
+  reason: Extract<Qualification, { ok: false }>['reason'];
+  detail: string;
+  updated_at: Date;
+  updated_by: string;
+};
+
 /**
- * Remove every form whose name no longer qualifies — released, transferred
- * away, or a `test.*` form after the operator stopped admitting them. Called
- * after each sync (§20.3): a draft under a name nobody holds belongs to
- * nobody. Returns the names swept.
+ * The forms this host holds that its own rules no longer let it serve —
+ * design §20.3.
+ *
+ * A form is DARK when its name stopped qualifying: the name was released, its
+ * Prefix moved to another organization, the operator removed an organization
+ * from this host's configuration, or `test.*` forms are no longer admitted.
+ * `qualifies()` is consulted on every read and every write, so a dark form is
+ * already unreachable — nothing serves it, nothing lists it openly, and a save
+ * under that name is refused.
+ *
+ * **This function deletes nothing, and nothing else does either.** It reports.
+ *
+ * The version of this that swept — deleted every dark form after each sync —
+ * was a hazard wearing the costume of a discipline. Two of the four reasons
+ * above are local configuration rather than facts about the world, so editing
+ * an environment variable and restarting destroyed the author's only copy of
+ * their work, silently, at boot. Unpublished content exists nowhere else by
+ * construction: the Registry does not hold it (§13.3), the feed does not carry
+ * it (§20.1), and a host that loses its mirror rebuilds it from canon in
+ * seconds while a host that loses a draft has lost it. Release frees a NAME,
+ * not its author's work.
+ *
+ * So removal is deliberate — `DELETE /<name>:unpublished`, or an operator
+ * acting on what this report tells them. Dark rows accumulate; they are a few
+ * kilobytes each and invisible to every reader, which is the better trade in
+ * every direction. It is the discipline the rest of the Registry already
+ * keeps: no endpoint anywhere deletes a published version, and the absence is
+ * the enforcement.
  */
-export async function sweep(db: Queryable, config: WorkspaceConfig): Promise<string[]> {
-  const swept: string[] = [];
+export async function darkForms(db: Queryable, config: WorkspaceConfig): Promise<DarkForm[]> {
+  const dark: DarkForm[] = [];
   for (const form of await listForms(db, config)) {
     if (form.qualification.ok) continue;
-    await db.query(`DELETE FROM workspace_profile WHERE name = $1`, [form.name]);
-    swept.push(form.name);
+    dark.push({
+      name: form.name,
+      reason: form.qualification.reason,
+      detail: form.qualification.detail,
+      updated_at: form.updated_at,
+      updated_by: form.updated_by,
+    });
   }
-  return swept;
+  return dark;
 }
 
 /** The holders this workspace serves, by name, from the mirror — for the boot log and the index page. */

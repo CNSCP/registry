@@ -40,7 +40,7 @@ import { transferTlp } from '../src/part-one/transfer.ts';
 import { bootstrap, sync, type Fetch } from '../src/distribution/follower.ts';
 import { createWorkspace } from '../src/workspace/routes.ts';
 import { createForwarder, registerWriteFallthrough } from '../src/distribution/forward.ts';
-import { sweep } from '../src/workspace/store.ts';
+import { darkForms } from '../src/workspace/store.ts';
 import { workspaceCredentialsFromEnv, mayWriteWorkspace } from '../src/workspace/credential.ts';
 import { workspaceConfigFromEnv } from '../src/workspace/config.ts';
 import { contentHash } from '../src/profile/store.ts';
@@ -98,7 +98,6 @@ const p2 = { Name: 'units', Mandatory: 'no', Propagate: 'yes', Description: 'The
 
 async function catchUp(): Promise<void> {
   await sync(instance.pool, fetchVia(upstreamApp));
-  await sweep(instance.pool, config);
 }
 
 before(async () => {
@@ -361,17 +360,64 @@ describe('what the workspace holds (§20.3)', () => {
       const save = await app.inject({ method: 'PUT', url: '/test.other:unpublished', headers: ws(), payload: document('test.other', [p1]) });
       assert.equal(save.statusCode, 403, save.body);
       assert.equal((save.json() as { code: string }).code, 'workspace.test-not-admitted');
-      // A form saved while admitted goes dark once not: the read is the Registry's 404, and the sweep removes it.
+      // A form saved while admitted goes DARK once it is not: unreachable,
+      // unlisted — and still there. A configuration change is not a decision
+      // about somebody's only copy of their work (§20.3).
       const dark = await app.inject({ method: 'GET', url: '/test.lab.probe:unpublished', headers: { accept: SPEC } });
       assert.equal(dark.statusCode, 404);
-      const index = await app.inject({ method: 'GET', url: '/workspace', headers: { accept: SPEC } });
-      assert.deepEqual((index.json() as { forms: { name: string }[] }).forms.map((f) => f.name), ['padi.ws']);
+
+      const open = await app.inject({ method: 'GET', url: '/workspace', headers: { accept: SPEC } });
+      const openBody = open.json() as { forms: { name: string }[]; dark?: unknown };
+      assert.deepEqual(openBody.forms.map((f) => f.name), ['padi.ws']);
+      assert.equal(openBody.dark, undefined, 'a dark name is not disclosed on the open index');
+
+      const operator = await app.inject({ method: 'GET', url: '/workspace', headers: { accept: SPEC, ...ws() } });
+      const seen = (operator.json() as { dark: { name: string; reason: string }[] }).dark;
+      assert.deepEqual(seen.map((d) => [d.name, d.reason]), [['test.lab.probe', 'test-not-admitted']]);
+
+      const row = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'test.lab.probe'`);
+      assert.equal(row.rowCount, 1, 'nothing deleted it');
     } finally {
       await app.close();
     }
-    // Still there for the admitting host — the sweep is the strict host's to run, and it did not.
+    // And it is untouched for the host that does admit it.
     const still = await instanceApp.inject({ method: 'GET', url: '/test.lab.probe:unpublished', headers: { accept: SPEC } });
     assert.equal(still.statusCode, 200);
+  });
+
+  test('a form goes dark when the host\'s configuration changes, and survives a restart', async () => {
+    // padi.ws is held because Padi, Inc. is in WORKSPACE_ORGS. Take the
+    // organization out — an edit to an environment variable, nothing to do
+    // with canon — and the form must go dark WITHOUT being destroyed.
+    const narrowed = { orgs: [] as string[], test: true };
+    const workspace = createWorkspace({
+      db: instance.pool,
+      config: narrowed,
+      credentials: [{ token: WS_TOKEN, label: 'anto', principal: 'anto@padi.io' }],
+      upstream: UPSTREAM,
+    });
+    const app = Fastify();
+    await registerResolutionRoutes(app, { db: instance.pool, role: 'instance', upstream: UPSTREAM, workspace: workspace.hooks });
+    workspace.register(app);
+    registerInstanceRefusals(app, UPSTREAM);
+    await app.ready();
+    try {
+      const read = await app.inject({ method: 'GET', url: '/padi.ws:unpublished', headers: { accept: SPEC } });
+      assert.equal(read.statusCode, 404, 'dark to readers');
+      const save = await app.inject({ method: 'PUT', url: '/padi.ws:unpublished', headers: ws(), payload: document('padi.ws', [p1]) });
+      assert.equal(save.statusCode, 403, 'and refused to writers');
+
+      // Twice, because the old sweep ran at boot AND after every sync.
+      assert.equal((await darkForms(instance.pool, narrowed)).some((d) => d.name === 'padi.ws'), true);
+      assert.equal((await darkForms(instance.pool, narrowed)).some((d) => d.name === 'padi.ws'), true);
+      const row = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'padi.ws'`);
+      assert.equal(row.rowCount, 1, 'reporting is not deleting');
+    } finally {
+      await app.close();
+    }
+    // Put the organization back and the form is simply there again.
+    const back = await instanceApp.inject({ method: 'GET', url: '/padi.ws:unpublished', headers: { accept: SPEC } });
+    assert.equal(back.statusCode, 200, 'a reversible setting had a reversible effect');
   });
 
   test('a name registered a moment ago: the workspace catches up rather than reporting its own lag', async () => {
@@ -529,8 +575,8 @@ describe('the human pages (§20.3)', () => {
   });
 });
 
-describe('release and the sweep (§20.3)', () => {
-  test('a released name\'s form goes dark at once and is swept on the next sync; the journal is untouched by any of it', async () => {
+describe('release, dark forms, and what is never deleted (§20.3)', () => {
+  test('a released name\'s form goes dark at once and is KEPT; the journal is untouched by any of it', async () => {
     const before = await journalChain(instanceApp);
 
     const put = await upstreamApp.inject({ method: 'PUT', url: '/padi.ws.gone', headers: auth() });
@@ -541,15 +587,24 @@ describe('release and the sweep (§20.3)', () => {
 
     const del = await upstreamApp.inject({ method: 'DELETE', url: '/padi.ws.gone', headers: auth() });
     assert.equal(del.statusCode, 204, del.body);
-    await sync(instance.pool, fetchVia(upstreamApp)); // applied, not yet swept
+    await sync(instance.pool, fetchVia(upstreamApp));
 
     const dark = await instanceApp.inject({ method: 'GET', url: '/padi.ws.gone:unpublished', headers: { accept: SPEC } });
     assert.equal(dark.statusCode, 404, 'dark: the name is no longer one the organization holds');
-    const rows = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'padi.ws.gone'`);
-    assert.equal(rows.rowCount, 1, 'the row is still there until the sweep');
 
-    const swept = await sweep(instance.pool, config);
-    assert.deepEqual(swept, ['padi.ws.gone']);
+    // Release frees a NAME, not its author's work. The report names it; the
+    // row stays until somebody decides otherwise (§20.3).
+    const reported = await darkForms(instance.pool, config);
+    assert.deepEqual(
+      reported.filter((d) => d.name === 'padi.ws.gone').map((d) => d.reason),
+      ['not-registered'],
+    );
+    const rows = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'padi.ws.gone'`);
+    assert.equal(rows.rowCount, 1, 'nothing deleted the draft');
+
+    // Removal is deliberate, and that is the only thing that removes it.
+    const removed = await instanceApp.inject({ method: 'DELETE', url: '/padi.ws.gone:unpublished', headers: ws() });
+    assert.equal(removed.statusCode, 204, removed.body);
     const after = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'padi.ws.gone'`);
     assert.equal(after.rowCount, 0);
 
