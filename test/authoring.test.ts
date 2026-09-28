@@ -13,6 +13,7 @@
  */
 
 import { test, describe, before, after } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type pg from 'pg';
@@ -242,9 +243,17 @@ describe('the lifecycle, end to end (§13)', () => {
     const after = await app.inject({ method: 'GET', url: '/padi.authored:2', headers: { accept: SPEC } });
     assert.equal(after.json().Header.Owner, 'Padi, Inc. (steward two)');
     assert.equal(after.json().Header.Website, 'https://padi.io/authored-2');
-    // ...the contract has not moved: same content commitment, same validators...
+    // ...the contract has not moved: same content commitment, same ETag...
     assert.equal(after.headers['etag'], before.headers['etag']);
-    assert.equal(after.headers['content-digest'], before.headers['content-digest']);
+    // ...but the BYTES did move, so the digest moves with them. The two headers
+    // answer different questions (§18, 28 Sept): the ETag says which contract
+    // this is, and holds across a stewardship change; Content-Digest says
+    // whether these bytes arrived intact, and covers the overlaid answer.
+    assert.notEqual(after.headers['content-digest'], before.headers['content-digest']);
+    assert.equal(
+      after.headers['content-digest'],
+      `sha-256=:${createHash('sha256').update(Buffer.from(after.body, 'utf8')).digest('base64')}:`,
+    );
     assert.deepEqual(after.json().Properties, before.json().Properties);
     assert.equal(contractHash(after.json()), contractHash(before.json()));
     // ...and the frozen row is untouched: served_bytes still say what was published.

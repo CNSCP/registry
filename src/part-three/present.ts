@@ -13,8 +13,9 @@
  *
  * So the answer is the frozen document with those three fields OVERLAID
  * from the row — and only when they differ, so the common case is still a
- * verbatim replay. Content hash, ETag and Content-Digest are those of the
- * frozen document: they commit to the content, and the content did not move.
+ * verbatim replay. Content hash and ETag are those of the frozen document:
+ * they commit to the content, and the content did not move. Content-Digest is
+ * not — it covers the bytes actually sent, which an overlay changes (§18).
  * A party checking a served copy against the journal compares CONTRACT
  * hashes (contractHash: the document minus the three fields) — see
  * verify-cli — which is exactly the comparison spec §9.3 asks for.

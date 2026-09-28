@@ -29,6 +29,8 @@
  * (spec §7.4).
  */
 
+import { createHash } from 'node:crypto';
+
 export const MEDIA = {
   /** Default for machines; a wildcard Accept resolves here (§19.2, settled §25 Q2). */
   spec2026: 'application/cp+json; profile=2026',
@@ -75,9 +77,25 @@ export function negotiate(accept: string | undefined, fallback: Representation =
   return fallback;
 }
 
-/** RFC 9530 Content-Digest, from the stored content hash. */
-export function contentDigest(sha256Hex: string): string {
-  return `sha-256=:${Buffer.from(sha256Hex, 'hex').toString('base64')}:`;
+/**
+ * RFC 9530 Content-Digest, over THE BYTES IN THIS MESSAGE (§18, 28 Sept).
+ *
+ * Not the content hash. `content_hash` is `sha256(canonicalJson(document))`
+ * with object keys sorted, while what goes on the wire is `served_bytes` in
+ * the author's own key order, with the three mutable Header fields overlaid
+ * when they have moved. Two serializations of one document, and RFC 9530
+ * defines this header as a digest of the content of *this* message — so a
+ * client that hashes what arrived and compares must find it equal, or it
+ * concludes the response was damaged in transit.
+ *
+ * The canonical hash keeps its own places: the ETag, the journal, the anchor.
+ * This header answers a different question — did these bytes arrive intact —
+ * and so it legitimately differs between two answers for one version when a
+ * mutable field has moved, and between two representations of one contract.
+ */
+export function contentDigest(body: string | Buffer): string {
+  const bytes = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
+  return `sha-256=:${createHash('sha256').update(bytes).digest('base64')}:`;
 }
 
 /** A strong ETag. One name and version is one content commitment (spec §9.3). */
@@ -90,12 +108,21 @@ export function versionETag(contentHash: string, representation: Representation)
 
 export type CacheHeaders = Record<string, string>;
 
-/** A published version: the contract content never changes (§18). */
-export function immutableVersionHeaders(contentHash: string, representation: Representation): CacheHeaders {
+/**
+ * A published version: the contract content never changes (§18).
+ *
+ * `body` is the serialized answer, and is omitted on a `304`, which carries
+ * the validators but has no content to digest.
+ */
+export function immutableVersionHeaders(
+  contentHash: string,
+  representation: Representation,
+  body?: string | Buffer,
+): CacheHeaders {
   return {
     'cache-control': 'public, max-age=31536000, immutable',
     'etag': versionETag(contentHash, representation),
-    'content-digest': contentDigest(contentHash),
+    ...(body === undefined ? {} : { 'content-digest': contentDigest(body) }),
     'vary': 'Accept',
   };
 }

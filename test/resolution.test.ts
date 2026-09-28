@@ -29,6 +29,12 @@ import { planImport } from '../src/profile/import.ts';
 import { runImport } from '../src/seed/import-profiles.ts';
 import { registerResolutionRoutes, splitReference, renderVersionForTest } from '../src/part-three/routes.ts';
 import { negotiate, contentDigest, etagMatches } from '../src/part-three/http.ts';
+import { createHash } from 'node:crypto';
+
+/** What the body in this message hashes to, in the RFC 9530 form. */
+function digestOf(body: string): string {
+  return `sha-256=:${createHash('sha256').update(Buffer.from(body, 'utf8')).digest('base64')}:`;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = parseCorpus(
@@ -182,6 +188,45 @@ describe('the caching split (§18)', () => {
     assert.equal(response.headers['cache-control'], 'public, max-age=31536000, immutable');
     assert.match(String(response.headers['etag']), /^"[0-9a-f]{64}-spec2026"$/);
     assert.ok(String(response.headers['content-digest']).startsWith('sha-256=:'));
+  });
+
+  test('Content-Digest covers the bytes in the message, in every representation (§18)', async () => {
+    // The check nothing made until 28 Sept, and the one that would have caught
+    // a digest carrying the CANONICAL hash while the wire carried the author's
+    // own key order. RFC 9530 defines this header as a digest of the content of
+    // this message: a party that hashes what arrived and compares must find it
+    // equal, or it concludes the answer was damaged in transit.
+    for (const accept of ['application/cp+json; profile=2026', 'application/json']) {
+      const r = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1', headers: { accept } });
+      assert.equal(r.statusCode, 200, accept);
+      assert.equal(r.headers['content-digest'], digestOf(r.body), accept);
+    }
+  });
+
+  test('a grandfathered version digests to its own bytes too', async () => {
+    // Authoring key order is furthest from canonical on the imported corpus,
+    // so this is where a canonical-hash digest diverges most.
+    const r = await app.inject({
+      method: 'GET', url: '/padi.light:1',
+      headers: { accept: 'application/cp+json; profile=2026' },
+    });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.headers['x-cp-grandfathered'], 'true');
+    assert.equal(r.headers['content-digest'], digestOf(r.body));
+    // ...and the ETag still carries the canonical content hash, unchanged.
+    assert.match(String(r.headers['etag']), /^"[0-9a-f]{64}-spec2026"$/);
+  });
+
+  test('a 304 carries the validators and no digest — there is no body to digest', async () => {
+    const first = await app.inject({ method: 'GET', url: '/padi.tstat.basic:1' });
+    const second = await app.inject({
+      method: 'GET', url: '/padi.tstat.basic:1',
+      headers: { 'if-none-match': String(first.headers['etag']) },
+    });
+    assert.equal(second.statusCode, 304);
+    assert.equal(second.headers['etag'], first.headers['etag']);
+    assert.equal(second.headers['cache-control'], 'public, max-age=31536000, immutable');
+    assert.equal(second.headers['content-digest'], undefined);
   });
 
   test('an UNVERSIONED fetch is the selection surface and is always revalidated', async () => {
@@ -513,9 +558,12 @@ describe('the imported corpus resolves', () => {
 });
 
 describe('http helpers', () => {
-  test('Content-Digest is RFC 9530 base64 of the raw hash', () => {
-    const digest = contentDigest('ab'.repeat(32));
+  test('Content-Digest is RFC 9530 base64 of the hash of the bytes given', () => {
+    const digest = contentDigest('{"Header":{}}');
     assert.match(digest, /^sha-256=:[A-Za-z0-9+/=]+:$/);
+    assert.equal(digest, digestOf('{"Header":{}}'));
+    // A string and its bytes are one message.
+    assert.equal(contentDigest(Buffer.from('{"Header":{}}', 'utf8')), digest);
   });
 
   test('If-None-Match handles lists, weak tags, and star', () => {

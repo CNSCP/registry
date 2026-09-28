@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.18 · 25 September 2026
+**Status:** Draft v0.19 · 28 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, **published 16 September 2026** at [github.com/CNSCP/specification](https://github.com/CNSCP/specification) — §1–§10 with Appendices A–C, editors Toby Considine and Anto Budiardjo. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, and now anyone can check the pin.** This design is written against one identifiable artifact:
@@ -25,6 +25,8 @@
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
 >
+> **v0.19 makes `Content-Digest` describe the message (28 September).** §18 sent a digest derived from `content_hash` — the hash of the *canonical* serialization, keys sorted — alongside a body that is `served_bytes` in the author's key order, overlaid. The two never matched, so a client doing the obvious check concluded the answer was damaged in transit, and would have blamed the CDN, which this morning's probing shows passes everything through untouched. RFC 9530 means the content of the message, so that is now what it covers; the canonical hash keeps the ETag, the journal and the anchor. A `304` carries validators and no digest; a `406` carries neither, where it used to carry an immutable cache life. Found while characterising Cloudflare in front of canon, and ahead of the CORS work, which would have exposed the header to exactly the party most likely to verify it. §22's "copies agree" row moves to the canonical hash.
+
 > **v0.18 stops the workspace deleting drafts (25 September).** §20.3's sweep removed every form whose name no longer qualified, at boot and after each sync — but two of the four disqualifying reasons are local configuration, so editing an environment variable destroyed the author's only copy of their work, silently. Unpublished content exists nowhere else by construction, so the rule is now flat: a workspace never deletes a form on its own. `darkForms()` reports instead; removal is deliberate. Found by Arete's request for a narrowing Prefix list, which would have added a third such path.
 >
 > **v0.17 gives the unpublished form a host (17–21 September).** §20.3: an organization's workspace beside its local Registry instance — the same image, two settings, run inside a security boundary or in public, `cp.padi.io` first — holding the unpublished forms of the names the organization holds and of `test.*`, open to read, marked on every answer, one credential per surface, never in the feed, with the spec §5.3 non-capture argument written out. The Registry surface of a host running one stays byte-identical to canon in every machine representation. §4.4, §13.3, §20 and §22 are qualified accordingly; §3.2 withholds `workspace`; §25 gains Q14 (the credential's second form). Built and tested 21 September, with forwarding (`FORWARD_WRITES`, a pipe that holds no credential of its own and refuses nothing), the MCP server's `get_unpublished` / `save_unpublished`, and the private and public worked deployments in `deploy/INSTANCE.md`.
@@ -839,7 +841,7 @@ Spec §7.4 says a cached version "can never be stale in any way that affects a m
 So the served document cannot be cached as a unit. Part Three splits it:
 
 - **Contract content** — Properties and the fixed Header fields. Immutable; cacheable indefinitely; `Cache-Control: public, max-age=31536000, immutable` on a versioned fetch.
-- **Mutable state** — `Status` and the two stewardship fields. Delivered through the journal (§20), not re-fetched per resolution, so a local instance learns of a deprecation by following the feed rather than by expiring a cache. **On the wire they are overlaid onto the frozen document** (`part-three/present.ts`, 11 Sept): a versioned answer carries the current Status, Owner and Website in its Header — spec §9.3 says these three "may differ between answers" — while its ETag and `Content-Digest` remain the frozen content's, because the contract did not move. The bytes are replayed verbatim unless something has moved. The selection surface lists the current Owner and Website per version as well.
+- **Mutable state** — `Status` and the two stewardship fields. Delivered through the journal (§20), not re-fetched per resolution, so a local instance learns of a deprecation by following the feed rather than by expiring a cache. **On the wire they are overlaid onto the frozen document** (`part-three/present.ts`, 11 Sept): a versioned answer carries the current Status, Owner and Website in its Header — spec §9.3 says these three "may differ between answers" — while its ETag remains the frozen content's, because the contract did not move. The bytes are replayed verbatim unless something has moved. **`Content-Digest` is not the ETag's twin** (corrected 28 September): `content_hash` is `sha256(canonicalJson(document))` with keys sorted, while the wire carries `served_bytes` in the author's own key order, overlaid — two serializations of one document, and a digest of the canonical one never matches the bytes it is sent with. RFC 9530 defines that header as a digest of the content of *this message*, so it is now computed over the bytes that leave. Three mechanisms, three questions: the **ETag** says which contract this is, and holds across hosts, across time and across a Status change; **`Content-Digest`** says whether these bytes arrived intact, and properly differs between an overlaid answer and an untouched one, and between two representations of one contract; the **signed anchor** (§20.2) is what proves independent parties agree. A `304` carries the validators and no digest: there is no body to describe. A `406` carries neither. The selection surface lists the current Owner and Website per version as well.
 
 Get this wrong and a local instance quietly keeps selecting a version its author deprecated a year ago. Nothing turns on the stewardship fields going stale, but Status is load-bearing.
 
@@ -865,7 +867,7 @@ Resolution is the root; `/profiles` is the catalog.
 
 **Requirements:**
 
-- **One name and version is one content commitment** (spec §9.3). Responses carry a strong ETag and a `Content-Digest` derived from `content_hash`, so independent parties can detect whether their copies agree. Two answers for one version agree on their *contract* — the document minus Status, Owner and Website (`contractHash`) — which is what `verify-journal --resolve` compares, since those three fields may legitimately differ between answers (§18).
+- **One name and version is one content commitment** (spec §9.3). Responses carry a strong ETag derived from `content_hash`, so independent parties can detect whether their copies agree; `Content-Digest` is a transport checksum of the message and answers a different question (§18). Two answers for one version agree on their *contract* — the document minus Status, Owner and Website (`contractHash`) — which is what `verify-journal --resolve` compares, since those three fields may legitimately differ between answers (§18).
 - **Deprecation is surfaced additively** — extra keys, never a mutation of the version's Properties.
 - **Answers are given without regard to the identity of the party asking** (spec §9.3) — with no exception, now that the Registry holds no unpublished content.
 - Availability is realm-grade, and local instances (§20) are the answer to the cases where it isn't.
@@ -1130,7 +1132,7 @@ Acceptance criteria for Parts Two and Three.
 | Serves without regard to the identity of the party presenting a name | §19 |
 | SHALL register any name meeting spec §7.2 and §7.3; refuses only on stated grounds | §14 — owner policy is not a Registry ground |
 | Same name and version never answered with differing content | §12.2 `served_bytes` + `content_hash` |
-| Answers such that independent parties can detect whether copies agree | `Content-Digest` + the signed anchor, built 14 Sept (§4.3, §19, §20.2); `verify-journal --anchor` is the check, and needs no credential |
+| Answers such that independent parties can detect whether copies agree | the ETag's canonical `content_hash` + the signed anchor, built 14 Sept (§4.3, §19, §20.2); `verify-journal --anchor` is the check, and needs no credential |
 
 Two further requirements land indirectly: a conforming Profile must bear "a registered name of two or more segments, lowercase, under an allocated Top Level Prefix" (spec §9.4), which the registration gates guarantee; and a conforming Governor must be able to operate from a local instance (spec §7.4), which §20 exists to make possible.
 
@@ -1146,7 +1148,7 @@ Two further requirements land indirectly: a conforming Profile must bear "a regi
 | AuthZ | One pure module implementing §9.3 `authorizes()`, plus credential scopes (§15.2) | The whole ownership chain in one testable place, and the seam |
 | API description | OpenAPI from Fastify route schemas; a thin MCP server over the authoring verbs | Machine and agent authoring is a first-class path (§15.1), not an afterthought |
 | Jobs | `pg-boss` | Redemption timers, renewal warnings, anchor publication, journal compaction |
-| Caching | ETag + `Content-Digest`, CDN in front of resolution | Immutability makes versioned content infinitely cacheable (§18) |
+| Caching | ETag (identity) + `Content-Digest` (this message's bytes), CDN in front of resolution | Immutability makes versioned content infinitely cacheable (§18) |
 | Audit | Same-transaction append, SHA-256 chain, periodic signed anchor | Tamper-evidence without ceremony |
 
 Deployment: one codebase, four entrypoints as built — `allocation` (`tlp.`, the seam), `authoritative` (authoring + resolution + distribution: `cp.cnscp.io`, the only writer), `resolution` (resolution + distribution, for read replicas), and `instance` (resolution + the §20 follower: `cp.<organization>`). Resolution and distribution scale independently; allocation and authoring are single-instance-friendly at expected volume.

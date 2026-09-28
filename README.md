@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.18.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.19.
 
 **The normative anchor is the CNS/CP 2026 revision, published 16 September 2026 at
 [github.com/CNSCP/specification](https://github.com/CNSCP/specification).** It is pinned by

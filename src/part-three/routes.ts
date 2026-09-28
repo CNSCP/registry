@@ -403,9 +403,14 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     }
 
     const etag = versionETag(resolved.content_hash, representation);
-    applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation));
 
-    if (etagMatches(reply.request.headers['if-none-match'], etag)) return reply.code(304).send();
+    // The validators go out first so a revalidation is answered without
+    // serializing anything; the digest joins them on the paths that have a
+    // body, since it describes those bytes and nothing else (§18).
+    if (etagMatches(reply.request.headers['if-none-match'], etag)) {
+      applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation));
+      return reply.code(304).send();
+    }
 
     // Deprecation is surfaced ADDITIVELY — extra keys, never a mutation of the
     // version's Properties (§19).
@@ -418,6 +423,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       // hazard the goldens exist to catch — so a Channel-bearing version
       // refuses legacy outright. Grandfathered and Channel-free versions
       // keep serving it losslessly, so the deployed fleet is unaffected.
+      // A 406 carries no version: no immutable life, no validators, no digest.
       const document = resolved.content as { Channels?: unknown[] };
       if (Array.isArray(document.Channels) && document.Channels.length > 0) {
         return reply.code(406).type(MEDIA.legacy).send({
@@ -426,7 +432,11 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
           href: `/${resolved.name}:${resolved.version}`,
         });
       }
-      return reply.type(MEDIA.legacy).send(toLegacy(resolved));
+      // Serialized here rather than handed to the framework, because the
+      // digest must cover exactly the bytes that leave.
+      const legacy = JSON.stringify(toLegacy(resolved));
+      applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation, legacy));
+      return reply.type(MEDIA.legacy).send(legacy);
     }
 
     // The 2026 shape, served from the STORED BYTES where we have them. Spec
@@ -435,11 +445,15 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     // a serializer to be deterministic across deployments (§19.2).
     // ...with the three mutable Header fields — Status, Owner, Website —
     // overlaid from the row when they have moved since publication (spec
-    // §6.6, §9.3; part-three/present.ts). The ETag and Content-Digest above
-    // are the frozen content's: the contract did not change, and a cache
-    // that holds the old answer holds a correct contract with stale
-    // stewardship, which §18 accepts by design.
-    return reply.type(MEDIA.spec2026).send(presentVersion(resolved).text);
+    // §6.6, §9.3; part-three/present.ts). The ETag is the frozen content's:
+    // the contract did not change, and a cache that holds the old answer
+    // holds a correct contract with stale stewardship, which §18 accepts by
+    // design. The Content-Digest is NOT — it covers the bytes below, so an
+    // overlaid answer digests differently from an untouched one while both
+    // carry the same ETag. Two questions, two headers (§18, 28 Sept).
+    const body = presentVersion(resolved).text;
+    applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation, body));
+    return reply.type(MEDIA.spec2026).send(body);
   }
 
   async function allocationPage(
