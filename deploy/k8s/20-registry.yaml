@@ -65,6 +65,17 @@ spec:
             # mounts /auth/* and /account; with none it runs without sign-in.
             - name: CP_PUBLIC_ORIGIN
               value: 'https://cp.cnscp.io'
+            # The 2022 representation is deprecated (§19.2, 28 Sept 2026) and
+            # retires at the end of the year. Announced on 28 September;
+            # RFC 9745 wants a structured-field Date, RFC 8594 an HTTP-date,
+            # and the sunset must not precede the deprecation. Unset means the
+            # host says nothing, so these two are the announcement.
+            - name: LEGACY_DEPRECATION
+              value: '@1790553600'
+            - name: LEGACY_SUNSET
+              value: 'Thu, 31 Dec 2026 23:59:59 GMT'
+            # LEGACY_MIGRATION_URL is deliberately unset until the page exists:
+            # a Link header pointing at a 404 is worse than no Link header.
           envFrom:
             - secretRef: { name: registry-oauth }
           readinessProbe:

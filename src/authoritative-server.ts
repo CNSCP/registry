@@ -29,6 +29,7 @@ import { PgOwnershipStore } from './part-one/pg-store.ts';
 import { registerAuthoringRoutes, parseScopes, type Credential } from './part-two/routes.ts';
 import { findByToken, touch } from './credentials/store.ts';
 import { registerResolutionRoutes } from './part-three/routes.ts';
+import { legacyRetirementFromEnv } from './part-three/http.ts';
 import { identityConfigFromEnv, registerIdentityRoutes } from './identity/routes.ts';
 
 // Credentials come from two places (§15.2). The TABLE is the real one:
@@ -69,7 +70,11 @@ await registerAuthoringRoutes(app, {
 // CP_SESSION_SECRET / CP_PUBLIC_ORIGIN variables are all present.
 const identity = identityConfigFromEnv();
 if (identity) await registerIdentityRoutes(app, { pool, config: identity });
-await registerResolutionRoutes(app, { db: pool, html: process.env['RENDER_HTML'] !== 'false' });
+await registerResolutionRoutes(app, {
+  db: pool,
+  html: process.env['RENDER_HTML'] !== 'false',
+  legacy: legacyRetirementFromEnv(),
+});
 
 app.log.info(
   staticCredentials.length > 0

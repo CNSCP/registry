@@ -33,6 +33,7 @@
 import Fastify from 'fastify';
 import { getPool } from './db.ts';
 import { registerResolutionRoutes } from './part-three/routes.ts';
+import { legacyRetirementFromEnv } from './part-three/http.ts';
 import { bootstrap, sync } from './distribution/follower.ts';
 import { registerInstanceRefusals } from './distribution/routes.ts';
 import { createForwarder, registerWriteFallthrough } from './distribution/forward.ts';
@@ -129,6 +130,7 @@ await registerResolutionRoutes(app, {
   html,
   role: 'instance',
   upstream,
+  legacy: legacyRetirementFromEnv(),
   ...(workspace ? { workspace: workspace.hooks } : {}),
 });
 

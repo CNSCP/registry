@@ -109,6 +109,55 @@ export function versionETag(contentHash: string, representation: Representation)
 export type CacheHeaders = Record<string, string>;
 
 /**
+ * The retirement of the 2022 representation (§19.2, 28 Sept).
+ *
+ * The readers of that shape are deployed SDKs, not people, so a deprecation
+ * that lives only in a brief is not a deprecation. `Deprecation` (RFC 9745) is
+ * a structured-field Date — an `@` and a Unix timestamp — and may be in the
+ * future; `Sunset` (RFC 8594) is an HTTP-date and MUST NOT be earlier than it.
+ *
+ * Unset means unset: a host that has not been told the dates says nothing,
+ * rather than inventing one. A date announced and then moved is worse than a
+ * date announced late.
+ */
+export type LegacyRetirement = { deprecation: number; sunset?: Date; href?: string };
+
+export function legacyRetirementFromEnv(env: NodeJS.ProcessEnv = process.env): LegacyRetirement | null {
+  const raw = (env['LEGACY_DEPRECATION'] ?? '').trim().replace(/^@/, '');
+  if (!raw) return null;
+  const deprecation = Number(raw);
+  if (!Number.isInteger(deprecation)) {
+    throw new Error('LEGACY_DEPRECATION is a Unix timestamp in seconds (RFC 9745), optionally written "@<seconds>"');
+  }
+
+  const out: LegacyRetirement = { deprecation };
+
+  const sunsetRaw = (env['LEGACY_SUNSET'] ?? '').trim();
+  if (sunsetRaw) {
+    const sunset = new Date(sunsetRaw);
+    if (Number.isNaN(sunset.getTime())) throw new Error('LEGACY_SUNSET is a date this runtime can parse');
+    if (sunset.getTime() / 1000 < deprecation) {
+      throw new Error('LEGACY_SUNSET must not be earlier than LEGACY_DEPRECATION (RFC 9745 §2)');
+    }
+    out.sunset = sunset;
+  }
+
+  const href = (env['LEGACY_MIGRATION_URL'] ?? '').trim();
+  if (href) out.href = href;
+  return out;
+}
+
+/** The headers that mark an answer in the 2022 representation as going away. */
+export function retirementHeaders(retirement: LegacyRetirement | null | undefined): CacheHeaders {
+  if (!retirement) return {};
+  return {
+    'deprecation': `@${retirement.deprecation}`,
+    ...(retirement.sunset ? { 'sunset': retirement.sunset.toUTCString() } : {}),
+    ...(retirement.href ? { 'link': `<${retirement.href}>; rel="deprecation"; type="text/html"` } : {}),
+  };
+}
+
+/**
  * A published version: the contract content never changes (§18).
  *
  * `body` is the serialized answer, and is omitted on a `304`, which carries

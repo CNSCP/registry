@@ -28,7 +28,7 @@ import { parseCorpus } from '../src/profile/legacy.ts';
 import { planImport } from '../src/profile/import.ts';
 import { runImport } from '../src/seed/import-profiles.ts';
 import { registerResolutionRoutes, splitReference, renderVersionForTest } from '../src/part-three/routes.ts';
-import { negotiate, contentDigest, etagMatches } from '../src/part-three/http.ts';
+import { negotiate, contentDigest, etagMatches, legacyRetirementFromEnv } from '../src/part-three/http.ts';
 import { createHash } from 'node:crypto';
 
 /** What the body in this message hashes to, in the RFC 9530 form. */
@@ -554,6 +554,167 @@ describe('the imported corpus resolves', () => {
     );
     const response = await app.inject({ method: 'GET', url: '/padi.value:1' });
     assert.equal(response.body, rows[0]!.served_bytes.toString('utf8'));
+  });
+});
+
+describe('the 2022 alias, and its retirement (§19.2)', () => {
+  const LEGACY = 'application/json';
+
+  /**
+   * Append a published version straight to the table. Published versions are
+   * immutable by trigger, so a test that needs a Channel-bearing one in a
+   * particular position has to add it rather than edit one.
+   */
+  async function addVersion(
+    name: string,
+    version: number,
+    channels: Record<string, boolean>,
+    options: { create?: boolean } = {},
+  ): Promise<void> {
+    if (options.create) {
+      await db.query(
+        `INSERT INTO profile (name, allocation_id, registered_at)
+         SELECT $1, a.id, now() FROM allocation a WHERE a.tlp = split_part($1, '.', 1)`,
+        [name],
+      );
+    }
+    const document: Record<string, unknown> = {
+      Header: { Name: name, Version: String(version), Status: 'Published', Title: 't', Provider: 'P', Consumer: 'C' },
+      Properties: { Provider: [{ Name: 'state', Mandatory: 'yes', Propagate: 'yes', Description: 'd' }], Consumer: [] },
+    };
+    if (Object.keys(channels).length > 0) {
+      document['Channels'] = Object.keys(channels).map((n) => ({
+        Name: n, Mode: 'stream', Protocol: 'mqtt', Description: 'e',
+      }));
+    }
+    await db.query(
+      `INSERT INTO profile_version (profile_id, version, content, content_hash, status, published_at)
+       SELECT p.id, $2, $3::jsonb, $4, 'published', now() FROM profile p WHERE p.name = $1`,
+      [name, version, JSON.stringify(document), `test-${name}-${version}`],
+    );
+  }
+
+  test('a bare name on the alias returns the WHOLE 2022 document, not the selection surface', async () => {
+    // Arete's finding, 23 Sept: this used to answer {name, registered,
+    // versions:[{version,status,…}]}, which is a different object from what the
+    // server this alias replaces returns — not a differently-shaped one.
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.light', headers: { accept: LEGACY } });
+    assert.equal(r.statusCode, 200);
+    const doc = r.json() as Record<string, unknown>;
+
+    assert.equal(doc['name'], 'padi.light');
+    assert.equal(typeof doc['title'], 'string');
+    assert.equal(typeof doc['company'], 'string');
+    assert.equal(typeof doc['server'], 'string');
+    assert.equal(typeof doc['client'], 'string');
+    assert.ok(Array.isArray(doc['versions']));
+    assert.equal((doc['versions'] as unknown[]).length, 1);
+
+    // It is the 2022 shape all the way down: presence-encoded flags, no 2026 keys.
+    const first = (doc['versions'] as Record<string, unknown>[])[0]!;
+    const properties = first['properties'] as Record<string, unknown>[];
+    assert.ok(properties.length > 0);
+    assert.ok('name' in properties[0]!);
+    assert.equal(doc['Header'], undefined);
+    assert.equal(first['version'], undefined, 'the 2022 shape carries no version identifier');
+  });
+
+  test('it matches what the corpus holds for that name — the golden', async () => {
+    const expected = corpus.find((p) => p.name === 'padi.light')!;
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.light', headers: { accept: LEGACY } });
+    const doc = r.json() as { versions: { properties: unknown[] }[] };
+    assert.deepEqual(
+      doc.versions.map((v) => v.properties),
+      expected.versions!.map((v) => v.properties.map((prop) => ({
+        ...(prop.role === 'provider' ? { server: null } : {}),
+        name: prop.name,
+        ...(prop.propagate ? { propagate: null } : {}),
+        description: prop.description,
+        ...(prop.mandatory ? { required: null } : {}),
+      }))),
+    );
+  });
+
+  test('every version is carried, in order — the index IS the version number', async () => {
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.game.presence', headers: { accept: LEGACY } });
+    assert.equal(r.statusCode, 200);
+    assert.equal((r.json() as { versions: unknown[] }).versions.length, 2);
+  });
+
+  test('a version the 2022 shape cannot carry TRUNCATES the array — it is never dropped from the middle', async () => {
+    // Dropping one would renumber every version after it, serving version 3's
+    // Properties under the number 2: a changed contract, which is the thing the
+    // versioned alias answers 406 rather than do.
+    // A published version cannot be mutated — the database refuses it (§6.4,
+    // §9.3) — so history is EXTENDED: 3 declares Channels, 4 does not. A reader
+    // must see 1 and 2 and stop, never 1, 2 and 4 renumbered as three.
+    await addVersion('padi.game.presence', 3, { events: true });
+    await addVersion('padi.game.presence', 4, {});
+
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.game.presence', headers: { accept: LEGACY } });
+    assert.equal(r.statusCode, 200);
+    assert.equal((r.json() as { versions: unknown[] }).versions.length, 2, 'stops at the version it cannot carry');
+
+    // ...and the versioned form still refuses the Channel-bearing one outright.
+    const versioned = await app.inject({ method: 'GET', url: '/profiles/padi.game.presence:3', headers: { accept: LEGACY } });
+    assert.equal(versioned.statusCode, 406);
+    // The 2026 shape is unaffected by any of this: 4 is reachable and is itself.
+    const spec = await app.inject({ method: 'GET', url: '/padi.game.presence:4', headers: { accept: SPEC } });
+    assert.equal(spec.statusCode, 200);
+  });
+
+  test('when no version can be carried at all, the document is refused rather than served empty', async () => {
+    // Every version of this one declares Channels, so there is no prefix of
+    // history the 2022 shape can carry at all.
+    await addVersion('acme.only-channels', 1, { events: true }, { create: true });
+
+    const r = await app.inject({ method: 'GET', url: '/profiles/acme.only-channels', headers: { accept: LEGACY } });
+    assert.equal(r.statusCode, 406);
+    assert.match(String(r.json().error), /2022/);
+  });
+
+  test('a host told nothing about the retirement says nothing', async () => {
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.light', headers: { accept: LEGACY } });
+    assert.equal(r.headers['deprecation'], undefined);
+    assert.equal(r.headers['sunset'], undefined);
+  });
+
+  test('a host told the dates marks every 2022 answer, and no other', async () => {
+    const marked = Fastify();
+    await registerResolutionRoutes(marked, {
+      db,
+      legacy: legacyRetirementFromEnv({
+        LEGACY_DEPRECATION: '@1767225599',
+        LEGACY_SUNSET: 'Wed, 31 Dec 2025 23:59:59 GMT',
+        LEGACY_MIGRATION_URL: 'https://cnscp.io/legacy',
+      } as NodeJS.ProcessEnv),
+    });
+    await marked.ready();
+    try {
+      for (const url of ['/profiles/padi.light', '/profiles/padi.light:1']) {
+        const r = await marked.inject({ method: 'GET', url, headers: { accept: LEGACY } });
+        assert.equal(r.statusCode, 200, url);
+        assert.equal(r.headers['deprecation'], '@1767225599', url);
+        assert.equal(r.headers['sunset'], new Date('Wed, 31 Dec 2025 23:59:59 GMT').toUTCString(), url);
+        assert.match(String(r.headers['link']), /rel="deprecation"/, url);
+      }
+      // The 2026 shape is not deprecated and must not say it is.
+      const spec = await marked.inject({ method: 'GET', url: '/padi.light:1', headers: { accept: SPEC } });
+      assert.equal(spec.headers['deprecation'], undefined);
+      assert.equal(spec.headers['sunset'], undefined);
+    } finally {
+      await marked.close();
+    }
+  });
+
+  test('Sunset is refused if it precedes Deprecation (RFC 9745)', () => {
+    assert.throws(
+      () => legacyRetirementFromEnv({
+        LEGACY_DEPRECATION: '@1767225599',
+        LEGACY_SUNSET: 'Thu, 01 Jan 2015 00:00:00 GMT',
+      } as NodeJS.ProcessEnv),
+      /not be earlier/,
+    );
   });
 });
 

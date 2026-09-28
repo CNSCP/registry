@@ -24,6 +24,7 @@ import type { Queryable } from '../db.ts';
 import { isTlp, nameProblem, tlpOf } from '../names.ts';
 import { availability } from '../policy.ts';
 import { serializeProfile as serializeLegacy } from '../profile/legacy.ts';
+import type { Profile } from '../profile/model.ts';
 import { parseProfileVersion } from '../profile/spec2026.ts';
 import {
   namesBeginningWith,
@@ -43,6 +44,9 @@ import {
   MEDIA,
   etagMatches,
   immutableVersionHeaders,
+  legacyRetirementFromEnv,
+  retirementHeaders,
+  type LegacyRetirement,
   negotiate,
   selectionHeaders,
   versionETag,
@@ -51,6 +55,11 @@ import {
 
 export type ResolutionDeps = {
   db: Queryable;
+  /**
+   * The retirement of the 2022 representation (§19.2). Absent means this host
+   * says nothing about it — see `legacyRetirementFromEnv`.
+   */
+  legacy?: LegacyRetirement | null;
   /** Rendering is a courtesy; a JSON-only instance is fully conforming (§19.1). */
   html?: boolean;
   /**
@@ -116,6 +125,51 @@ function toLegacy(version: ResolvedVersion): unknown {
   return serializeLegacy(profile);
 }
 
+/**
+ * The 2022 document for a bare name — the whole Profile, every version.
+ *
+ * THE VERSION NUMBER IS THE ARRAY INDEX. The 2022 shape carries no version
+ * identifier: `versions[0]` IS version 1. That is why a version this shape
+ * cannot represent cannot simply be dropped from the middle — dropping one
+ * renumbers every version after it, and serving version 3's Properties under
+ * the number 2 is a changed contract, the hazard the goldens exist to catch.
+ *
+ * So the array is a PREFIX of history: versions are appended in order and the
+ * document stops at the first version that cannot be carried — a Channel-bearing
+ * one (§6.5 has no place in this shape), or a gap in the numbering. Everything
+ * present is then true and correctly numbered, and a legacy client selects from
+ * the versions it can actually honour. If that leaves nothing, there is no
+ * document to serve and the caller answers 406 rather than an empty Profile.
+ */
+async function legacyProfileDocument(
+  db: Queryable,
+  name: string,
+  versions: { version: number }[],
+): Promise<unknown | null> {
+  const ordered = [...versions].sort((a, b) => a.version - b.version);
+  const carried: Profile[] = [];
+
+  let expected = 1;
+  for (const v of ordered) {
+    if (v.version !== expected) break;
+    const resolved = await resolveVersion(db, name, v.version);
+    if (!resolved) break;
+    // From the ANSWER, so company and website follow stewardship (§18), the
+    // same way the versioned alias does.
+    const profile = parseProfileVersion(presentVersion(resolved).document as never);
+    if (profile.versions?.some((pv) => pv.channels && pv.channels.length > 0)) break;
+    carried.push(profile);
+    expected += 1;
+  }
+
+  const newest = carried[carried.length - 1];
+  if (!newest) return null;
+
+  // Profile-level fields come from the newest version carried: they are the
+  // Header as it stands, and the 2022 shape has exactly one set of them.
+  return serializeLegacy({ ...newest, versions: carried.flatMap((p) => p.versions ?? []) });
+}
+
 function applyHeaders(reply: FastifyReply, headers: Record<string, string>): void {
   for (const [key, value] of Object.entries(headers)) reply.header(key, value);
 }
@@ -125,6 +179,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
   const renderHtml = deps.html ?? true;
 
   const workspace = deps.workspace;
+  const retirement = deps.legacy ?? null;
   app.get('/health', async () => ({
     ok: true,
     part: 'three',
@@ -347,6 +402,23 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
 
       if (etagMatches(reply.request.headers['if-none-match'], etag)) return reply.code(304).send();
 
+      // The 2022 shape answers a bare name with the WHOLE PROFILE — every
+      // version, as the server this alias replaces did (§19.2). It is not a
+      // differently-shaped selection surface: it is a different object, which
+      // is what made the alias incompatible on the one form deployed SDKs use.
+      if (representation === 'legacy') {
+        applyHeaders(reply, retirementHeaders(retirement));
+        const document = await legacyProfileDocument(db, name, registered.versions);
+        if (!document) {
+          return reply.code(406).type(MEDIA.legacy).send({
+            error: 'no version of this Profile can be represented in the 2022 shape',
+            use: MEDIA.spec2026,
+            href: `/${name}`,
+          });
+        }
+        return reply.type(MEDIA.legacy).send(document);
+      }
+
       const body = {
         name: registered.name,
         registered: registered.registered_at,
@@ -434,6 +506,7 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       }
       // Serialized here rather than handed to the framework, because the
       // digest must cover exactly the bytes that leave.
+      applyHeaders(reply, retirementHeaders(retirement));
       const legacy = JSON.stringify(toLegacy(resolved));
       applyHeaders(reply, immutableVersionHeaders(resolved.content_hash, representation, legacy));
       return reply.type(MEDIA.legacy).send(legacy);

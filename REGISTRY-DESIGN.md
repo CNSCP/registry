@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.19 · 28 September 2026
+**Status:** Draft v0.20 · 28 September 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, **published 16 September 2026** at [github.com/CNSCP/specification](https://github.com/CNSCP/specification) — §1–§10 with Appendices A–C, editors Toby Considine and Anto Budiardjo. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, and now anyone can check the pin.** This design is written against one identifiable artifact:
@@ -25,6 +25,8 @@
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
 >
+> **v0.20 repairs the 2022 alias and starts retiring the representation (28 September).** §19.2: `/profiles/<name>` on a bare name answered the selection surface where the server it replaces returns the whole 2022 document — Arete's finding, and the one form deployed SDKs use. It now serves the whole Profile. Because that shape carries no version identifier, a version it cannot represent truncates the array rather than being dropped from the middle, which would renumber every version after it; if nothing can be carried the answer is `406`. The shape then freezes, and every answer in it carries `Deprecation` and `Sunset` from configuration — unset means silent. §21's promise that the alias is permanent is withdrawn, with the reasoning for why that is not a breach of the discipline.
+
 > **v0.19 makes `Content-Digest` describe the message (28 September).** §18 sent a digest derived from `content_hash` — the hash of the *canonical* serialization, keys sorted — alongside a body that is `served_bytes` in the author's key order, overlaid. The two never matched, so a client doing the obvious check concluded the answer was damaged in transit, and would have blamed the CDN, which this morning's probing shows passes everything through untouched. RFC 9530 means the content of the message, so that is now what it covers; the canonical hash keeps the ETag, the journal and the anchor. A `304` carries validators and no digest; a `406` carries neither, where it used to carry an immutable cache life. Found while characterising Cloudflare in front of canon, and ahead of the CORS work, which would have exposed the header to exactly the party most likely to verify it. §22's "copies agree" row moves to the canonical hash.
 
 > **v0.18 stops the workspace deleting drafts (25 September).** §20.3's sweep removed every form whose name no longer qualified, at boot and after each sync — but two of the four disqualifying reasons are local configuration, so editing an environment variable destroyed the author's only copy of their work, silently. Unpublished content exists nowhere else by construction, so the rule is now flat: a workspace never deletes a form on its own. `darkForms()` reports instead; removal is deliberate. Found by Arete's request for a narrowing Prefix list, which would have added a third such path.
@@ -891,10 +893,24 @@ The 2026 specification's Profile shape (`Header` object; `Properties` grouped in
 | Representation | Media type | When |
 |---|---|---|
 | Specification shape | `application/cp+json; profile=2026` | Default for machines; `Accept: */*` resolves here |
-| Legacy shape | `application/json` | The `/profiles/…` alias, and by explicit negotiation. Lossless for Channel-free versions; a version declaring Channels answers `406` here rather than serve a changed contract (§24.5) |
+| Legacy shape | `application/json` | The `/profiles/…` alias, and by explicit negotiation. **Deprecated, 28 September 2026 — see below.** Lossless for Channel-free versions; a version declaring Channels answers `406` here rather than serve a changed contract (§24.5) |
 | Human page | `text/html` | Browsers (§19.1) |
 
 `Vary: Accept` on every resolution response, and the cache key includes it.
+
+**The 2022 representation is being retired (28 September 2026).** What is retired is the *representation* — the shape with `title`, `company`, `server`, `client` — wherever it is served: by default on the `/profiles/` alias, and on an ordinary path under `Accept: application/json`. The `/profiles/` prefix goes with it. Nothing about how names resolve changes, and the Profiles themselves are untouched: the 73 imported names keep resolving, in the 2026 shape, indefinitely. This is about how documents are served.
+
+*First, the shape is repaired, so that migrating is a choice rather than a breakage.* Arete found on 23 September that `/profiles/<name>` answered a bare name with the 2026 selection surface, where the server this alias replaces returns the whole 2022 document — a different object, not a differently-shaped one, on the one form deployed SDKs actually use. It now returns the whole Profile, every version.
+
+*The version number is the array index.* The 2022 shape carries no version identifier: `versions[0]` **is** version 1. So a version this shape cannot represent — one declaring Channels (§6.5) — cannot be dropped from the middle, because dropping one renumbers every version after it and serves a later version's Properties under an earlier number. That is the changed contract the versioned alias answers `406` rather than produce. The array is therefore a **prefix of history**: versions are appended in order and the document stops at the first that cannot be carried. Everything present is correctly numbered, and a legacy client selects among versions it can honour. If nothing can be carried, the answer is `406` rather than an empty Profile. The two alias forms differ deliberately — `/profiles/<name>:<v>` refuses, because it was asked for one contract and must not lie; the bare name truncates, because it is a catalogue.
+
+*Then it freezes.* No new behaviour on the alias: no representation of Channels, no new fields, nothing that makes it more attractive to keep using.
+
+*And it says so on the wire.* The readers of this shape are deployed SDKs, not people, so a deprecation that lives only in a document is not a deprecation. Every answer carrying the 2022 representation gains `Deprecation` (RFC 9745, a structured-field Date) and, when set, `Sunset` (RFC 8594) and a `Link; rel="deprecation"` to the migration note. The dates come from `LEGACY_DEPRECATION`, `LEGACY_SUNSET` and `LEGACY_MIGRATION_URL`; **unset means unset** — a host that has not been told says nothing rather than inventing a date, because a date announced and then moved is worse than one announced late.
+
+**The dates, settled 28 September 2026: deprecated now, sunset 31 December 2026.** Ninety-four days, which is short for a public deprecation and right here, because there is no public: no production site reads this representation. The one consumer is the Padi platform itself, and the worst case is that Padi changes its own code to the 2026 shape — so the date is a deadline the operator sets for itself rather than an estimate about strangers. That also settles the sequencing: **the platform migrates first, and `cp.padi.io` is cut over afterwards**, which leaves that cut-over with no compatibility surface left to preserve and turns the riskiest step in the plan into one nobody notices. The repaired alias carries the platform through if the order ends up reversed.
+
+`LEGACY_MIGRATION_URL` stays unset until the page it names exists: a `Link` pointing at a 404 is worse than no `Link`.
 
 **The deployed encoding, measured.** All 70 records were parsed on 31 August 2026 and the key-presence scheme is sharper than the paragraph above conveys:
 
@@ -1110,7 +1126,7 @@ Part Three is the only part deployed by people who are not the operator, on sche
 
 - The **resolution profile** (§4.4) is the versioned artifact — the wire contract and the journal format — and it changes additively only. An instance built today must keep working against the feed in five years, or Realms lose the durability spec §7.4 exists to give them.
 - New fields are additive and ignorable; no field ever changes meaning.
-- The compatibility alias `/profiles/<name>` is permanent, not transitional.
+- ~~The compatibility alias `/profiles/<name>` is permanent, not transitional.~~ **Withdrawn 28 September 2026.** The 2022 representation is deprecated and will be retired (§19.2); the alias goes with it, since serving that shape is the only reason it exists. The discipline above is unchanged for everything else — what is being retired is a *superseded* representation on an announced schedule with the old contract held steady throughout, not a wire contract changed underneath its readers.
 - A breaking change to the feed would require a parallel endpoint and a long overlap — treat it as a last resort, and design the journal to make it unnecessary.
 
 ---

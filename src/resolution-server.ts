@@ -19,6 +19,7 @@
 import Fastify from 'fastify';
 import { getPool } from './db.ts';
 import { registerResolutionRoutes } from './part-three/routes.ts';
+import { legacyRetirementFromEnv } from './part-three/http.ts';
 
 const app = Fastify({ logger: true });
 
@@ -28,6 +29,7 @@ await registerResolutionRoutes(app, {
   db: getPool(),
   // HTML is a courtesy; a JSON-only instance is fully conforming (§19.1).
   html: process.env['RENDER_HTML'] !== 'false',
+  legacy: legacyRetirementFromEnv(),
 });
 
 const port = Number(process.env['RESOLUTION_PORT'] ?? 8080);
