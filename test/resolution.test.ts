@@ -733,6 +733,116 @@ describe('the 2022 alias, and its retirement (§19.2)', () => {
   });
 });
 
+describe('cross-origin reads (§19.4)', () => {
+  const ORIGIN = { origin: 'https://example.test' };
+  const EXPOSED = ['etag', 'content-digest', 'x-cp-status', 'deprecation', 'sunset', 'link'];
+
+  function assertOpen(r: { headers: Record<string, unknown> }, where: string): void {
+    assert.equal(r.headers['access-control-allow-origin'], '*', where);
+    const exposed = String(r.headers['access-control-expose-headers']).toLowerCase();
+    for (const h of EXPOSED) assert.ok(exposed.includes(h), `${where}: ${h} not exposed`);
+    assert.equal(r.headers['access-control-allow-credentials'], undefined, where);
+    assert.doesNotMatch(String(r.headers['vary'] ?? ''), /origin/i, `${where}: must not vary on Origin`);
+  }
+
+  test('every public read surface answers a cross-origin GET', async () => {
+    for (const url of [
+      '/', '/health', '/profiles', '/padi.light', '/padi.light:1', '/padi.light/registration',
+      '/profiles/padi.light', '/padi', '/policy/prefixes', '/distribution/snapshot',
+      '/distribution/status', '/.well-known/cp-anchor',
+    ]) {
+      const r = await app.inject({ method: 'GET', url, headers: ORIGIN });
+      assertOpen(r, url);
+    }
+  });
+
+  test('the responses a browser actually meets carry them too, not just the happy path', async () => {
+    // An error a browser cannot read is an error it cannot report.
+    const head = await app.inject({ method: 'HEAD', url: '/padi.light:1', headers: ORIGIN });
+    assertOpen(head, 'HEAD');
+
+    const first = await app.inject({ method: 'GET', url: '/padi.light:1', headers: ORIGIN });
+    const revalidated = await app.inject({
+      method: 'GET', url: '/padi.light:1',
+      headers: { ...ORIGIN, 'if-none-match': String(first.headers['etag']) },
+    });
+    assert.equal(revalidated.statusCode, 304);
+    assertOpen(revalidated, '304');
+
+    const missing = await app.inject({ method: 'GET', url: '/no.such.name', headers: ORIGIN });
+    assert.equal(missing.statusCode, 404);
+    assertOpen(missing, '404');
+
+    const refused = await app.inject({
+      method: 'GET', url: '/profiles/padi.game.presence:3',
+      headers: { ...ORIGIN, accept: 'application/json' },
+    });
+    assert.equal(refused.statusCode, 406);
+    assertOpen(refused, '406');
+
+    const malformed = await app.inject({ method: 'GET', url: '/padi.light:banana', headers: ORIGIN });
+    assert.equal(malformed.statusCode, 400);
+    assertOpen(malformed, '400');
+  });
+
+  test('a real preflight is answered — the shape a browser sends', async () => {
+    // Not a bare OPTIONS: a preflight carries these two fields, and the one
+    // that matters is If-None-Match, which is NOT CORS-safelisted. Without an
+    // answer here a browser client works until it starts revalidating.
+    const r = await app.inject({
+      method: 'OPTIONS', url: '/padi.light:1',
+      headers: {
+        ...ORIGIN,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'if-none-match',
+      },
+    });
+    assert.equal(r.statusCode, 204);
+    assert.equal(r.headers['access-control-allow-origin'], '*');
+    assert.match(String(r.headers['access-control-allow-methods']), /GET/);
+    assert.match(String(r.headers['access-control-allow-headers']).toLowerCase(), /if-none-match/);
+    assert.ok(Number(r.headers['access-control-max-age']) > 0);
+  });
+
+  test('the identity surface is not public, and neither is a write', async () => {
+    for (const url of ['/account', '/auth/google', '/auth']) {
+      const r = await app.inject({ method: 'GET', url, headers: ORIGIN });
+      assert.equal(r.headers['access-control-allow-origin'], undefined, url);
+    }
+    // Preflighting one is refused rather than answered.
+    const pre = await app.inject({
+      method: 'OPTIONS', url: '/account',
+      headers: { ...ORIGIN, 'access-control-request-method': 'GET' },
+    });
+    assert.equal(pre.statusCode, 404);
+
+    // A write carries nothing, whatever the path.
+    for (const method of ['PUT', 'POST', 'PATCH', 'DELETE'] as const) {
+      const r = await app.inject({ method, url: '/padi.light:1', headers: ORIGIN });
+      assert.equal(r.headers['access-control-allow-origin'], undefined, method);
+    }
+  });
+
+  test('the exposed list names only headers the server actually sends', async () => {
+    // A list that drifts is how this goes stale. Every name in it must appear
+    // on some real answer.
+    const seen = new Set<string>();
+    for (const [url, accept] of [
+      ['/padi.light:1', SPEC],
+      ['/profiles/padi.light', 'application/json'],
+      ['/padi.light', SPEC],
+    ] as const) {
+      const r = await app.inject({ method: 'GET', url, headers: { accept } });
+      for (const k of Object.keys(r.headers)) seen.add(k.toLowerCase());
+    }
+    // x-cp-surface and x-cp-grandfathered are instance/import specific; the
+    // rest must be present somewhere on canon's own answers.
+    for (const h of ['etag', 'content-digest', 'x-cp-status']) {
+      assert.ok(seen.has(h), `${h} is exposed but never sent`);
+    }
+  });
+});
+
 describe('http helpers', () => {
   test('Content-Digest is RFC 9530 base64 of the hash of the bytes given', () => {
     const digest = contentDigest('{"Header":{}}');

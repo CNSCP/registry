@@ -38,6 +38,7 @@ import {
   type VersionSummary,
 } from './store.ts';
 import { registerDistributionRoutes } from '../distribution/routes.ts';
+import { registerCors } from './cors.ts';
 import type { Role } from '../distribution/store.ts';
 import { presentVersion } from './present.ts';
 import {
@@ -182,6 +183,10 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
 
   const workspace = deps.workspace;
   const retirement = deps.legacy ?? null;
+
+  // Cross-origin reads (§19.4). Registered first so the hook is in place for
+  // every route below, including the ones that answer with an error.
+  registerCors(app);
   app.get('/health', async () => ({
     ok: true,
     part: 'three',
