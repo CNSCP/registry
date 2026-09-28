@@ -3,6 +3,44 @@
 Self-serve, from a Mac with GKE access (project `padi-80910`, cluster `padi-prod`,
 namespace `cp-registry`).
 
+## Two clusters — check your context first (28 Sept 2026)
+
+`padi-80910` holds **two** clusters, and every command below assumes the first:
+
+| Cluster | Location | What is in it |
+|---|---|---|
+| `padi-prod` | us-central1-c | **canon** — ns `cp-registry`, deployment `registry`, behind Istio |
+| `padi` | us-central1 | the Padi platform, and the follower serving **registry.padi.io** — ns `padi-registry`, deployment `padi-registry`, behind **Traefik** |
+
+`gcloud container clusters get-credentials` **silently switches the active
+context**, so a visit to the other cluster leaves every command here pointed
+somewhere unintended. Before a release:
+
+```sh
+kubectl config current-context     # expect gke_padi-80910_us-central1-c_padi-prod
+kubectl config use-context gke_padi-80910_us-central1-c_padi-prod
+```
+
+**The follower is a separate rollout, and it is easy to forget.** It follows
+canon's journal automatically but does not update its own code, so after a
+release that changes what is *served* — the resolution shape, headers,
+negotiation — roll it too:
+
+```sh
+kubectl -n padi-registry set image deployment/padi-registry \
+  padi-registry=ghcr.io/cnscp/registry:$(git rev-parse HEAD)
+kubectl -n padi-registry rollout status deployment/padi-registry
+```
+
+It was pinned to `:latest` until 28 September, which meant its version was
+whatever CI had published when the pod last started — the exact hazard step 4
+below warns about, found in the wild. It is pinned by SHA now; keep it that way.
+
+**Its acceptance check is not `verify-journal`** when it has just been
+installed: a fresh instance holds no journal before its bootstrap cursor and
+reports `intact` having checked nothing. Compare its answers with canon's
+instead, every published version, byte for byte. On 28 September: 73 of 73.
+
 1. `git push origin main`. CI runs the suite (including the real-PG16 job) and
    publishes `ghcr.io/cnscp/registry:latest`.
 2. **Wait for the publish job to finish** (Actions tab; ~90 s). The SHA-tagged image does
