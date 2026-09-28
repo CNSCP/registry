@@ -22,7 +22,7 @@
  * every request under it goes to the same resolver as `/:ref`.
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 
 /**
  * Headers a cross-origin reader may see. Without this a browser gets the body
@@ -115,7 +115,7 @@ export function registerCors(app: FastifyInstance): void {
   // request a caching client makes succeeds and every revalidation after it is
   // preflighted: without this, a browser client works until it starts caching
   // properly and then stops.
-  const preflight = async (path: string, reply: Parameters<Parameters<FastifyInstance['options']>[1]>[1]) => {
+  const preflight = async (path: string, reply: FastifyReply): Promise<FastifyReply> => {
     if (!isPublicRead(path)) return reply.code(404).send({ error: 'not found' });
     return reply
       .header('access-control-allow-methods', 'GET, HEAD, OPTIONS')
