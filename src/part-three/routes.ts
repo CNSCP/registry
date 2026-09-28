@@ -139,7 +139,9 @@ function toLegacy(version: ResolvedVersion): unknown {
  * one (§6.5 has no place in this shape), or a gap in the numbering. Everything
  * present is then true and correctly numbered, and a legacy client selects from
  * the versions it can actually honour. If that leaves nothing, there is no
- * document to serve and the caller answers 406 rather than an empty Profile.
+ * document to serve and the caller answers 406 rather than an empty Profile —
+ * a different case from a name with no published version at all, which the
+ * caller handles before this runs.
  */
 async function legacyProfileDocument(
   db: Queryable,
@@ -408,6 +410,17 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       // is what made the alias incompatible on the one form deployed SDKs use.
       if (representation === 'legacy') {
         applyHeaders(reply, retirementHeaders(retirement));
+
+        // REGISTERED, NOTHING PUBLISHED. The server this alias replaces answers
+        // such a name with its metadata and no `versions` key at all. We give
+        // the same shape without the metadata, because there is none to give:
+        // a Header arrives with a published version, and the Registry holds no
+        // unpublished content (spec §7.3). Name plus no versions is the true
+        // statement, and it is not a 406 — nothing here failed to be
+        // representable. (Three such names on canon today: padi.appliance,
+        // padi.device, padi.test.phase1a.)
+        if (registered.versions.length === 0) return reply.type(MEDIA.legacy).send({ name });
+
         const document = await legacyProfileDocument(db, name, registered.versions);
         if (!document) {
           return reply.code(406).type(MEDIA.legacy).send({

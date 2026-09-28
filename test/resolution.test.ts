@@ -673,6 +673,21 @@ describe('the 2022 alias, and its retirement (§19.2)', () => {
     assert.match(String(r.json().error), /2022/);
   });
 
+  test('a name registered with nothing published answers name-and-no-versions, not 406', async () => {
+    // What the 0.11.0 server gives is metadata and no `versions` key. We give
+    // the same shape minus the metadata, because a Header arrives with a
+    // published version and the Registry holds none before that (spec §7.3).
+    // Confirmed against the old server on 28 Sept for padi.device.
+    await db.query(
+      `INSERT INTO profile (name, allocation_id, registered_at)
+       SELECT 'padi.nothing-yet', a.id, now() FROM allocation a WHERE a.tlp = 'padi'`,
+    );
+    const r = await app.inject({ method: 'GET', url: '/profiles/padi.nothing-yet', headers: { accept: LEGACY } });
+    assert.equal(r.statusCode, 200);
+    assert.deepEqual(r.json(), { name: 'padi.nothing-yet' });
+    assert.equal('versions' in (r.json() as object), false, 'no versions key at all, as the old server does');
+  });
+
   test('a host told nothing about the retirement says nothing', async () => {
     const r = await app.inject({ method: 'GET', url: '/profiles/padi.light', headers: { accept: LEGACY } });
     assert.equal(r.headers['deprecation'], undefined);
