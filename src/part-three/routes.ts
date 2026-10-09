@@ -651,7 +651,6 @@ const SITE_STYLE = `
   .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:700;font-size:1.1rem}
   .brand img{width:30px;height:30px;border-radius:7px}
   .brand:hover{text-decoration:none}
-  .tm{font-size:.5em;font-weight:500;vertical-align:super;line-height:0;margin-left:1px;letter-spacing:0}
   .site-nav{margin-left:auto}.site-nav ul{list-style:none;display:flex;gap:4px;flex-wrap:wrap;margin:0}
   .site-nav li,.service-nav li{margin:0}
   /* The Registry's own surfaces, set apart from the six this host shares with
@@ -901,7 +900,7 @@ function siteChrome(title: string, active: NavId | null, body: string): string {
 <link rel="icon" href="https://cnscp.io/favicon.ico">
 <style>${SITE_STYLE}</style></head><body>
 <header class="site-header"><div class="bar">
-  <a class="brand" href="https://cnscp.io"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP<sup class="tm">&trade;</sup></span></a>
+  <a class="brand" href="https://cnscp.io"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP</span></a>
   <nav class="site-nav" aria-label="CNS/CP"><ul>
     ${SITE_NAV.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
   </ul></nav>
@@ -913,7 +912,7 @@ function siteChrome(title: string, active: NavId | null, body: string): string {
 </div></header>
 ${body}
 <footer class="site-footer"><div class="tail">
-  <span>&copy; 2026 Padi Inc. CNS/CP&trade; is a trademark of Padi, Inc. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
+  <span>&copy; 2026 Padi Inc. All rights reserved. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
   <span><a href="https://cnscp.io">cnscp.io</a> &middot;
     <a href="https://github.com/CNSCP/registry">Source</a> &middot;
     <a href="https://projectarete.io">Project Arete</a></span>
@@ -942,7 +941,7 @@ function instanceChrome(title: string, active: NavId | null, body: string): stri
 <link rel="icon" href="https://cnscp.io/favicon.ico">
 <style>${SITE_STYLE}${INSTANCE_STYLE}</style></head><body>
 <header class="site-header"><div class="bar">
-  <a class="brand" href="/"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP<sup class="tm">&trade;</sup></span></a>
+  <a class="brand" href="/"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP</span></a>
   ${framing.operator ? `<span class="operator">${escape(framing.operator)}</span>` : ''}
   <nav class="service-nav" aria-label="Registry instance"><ul>
     ${items.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
@@ -951,7 +950,7 @@ function instanceChrome(title: string, active: NavId | null, body: string): stri
 <div class="provenance"><div class="wrap">${provenance('An instance')}</div></div>
 ${body}
 <footer class="site-footer"><div class="tail">
-  <span>&copy; 2026 Padi Inc. CNS/CP&trade; is a trademark of Padi, Inc. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
+  <span>&copy; 2026 Padi Inc. All rights reserved. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
   <span><a href="https://cnscp.io">cnscp.io</a> &middot;
     <a href="${escape(framing.upstream ?? '')}">${escape(upstreamHost())}</a> &middot;
     <a href="https://github.com/CNSCP/registry">Source</a></span>
