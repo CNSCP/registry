@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.22 · 9 October 2026
+**Status:** Draft v0.23 · 9 October 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, **published 16 September 2026** at [github.com/CNSCP/specification](https://github.com/CNSCP/specification) — §1–§10 with Appendices A–C, editors Toby Considine and Anto Budiardjo. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, and now anyone can check the pin.** This design is written against one identifiable artifact:
@@ -24,6 +24,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.23 settles Q7(a): roles on branches (9 October).** Membership of the holding organization authorized everything beneath its Prefixes, §5's "unless the owner has narrowed it with scopes" had no mechanism, and the `admin` role conferred nothing, so every change to who may act went through the operator. Now (§5, §6.2, §8.3, §9.3): membership is the precondition, and what a member may do is a **role on a branch** — `register` (claim, release), `publish` (publish, deprecate, steward) and `admin` (grant within the branch, add members), in any combination; a branch covers a name and everything beneath it, a role may instead reach exactly one name, and `*` is everything the organization may act on. Admins grant only within what they administer, from `/account`. Migration 14 backfills `*` roles from `member.role`, so no outcome changes until someone narrows one. New refusal: `no-role`.
 >
 > **v0.22 frames the page by host (9 October).** §19.5: every rendered page wore canon's frame — the cnscp.io site navigation, and on the front page "the canonical registry" — including on instances, where both are untrue. A frame is now chosen by the host, never the request: *site* for canon (fixed; canon's pages are byte-identical to v0.21's), *instance* for a local instance (the operator's name as canon records it, the instance's own surfaces, and a provenance line naming the upstream and the verified seq), and *bare* for a page another application embeds (no header or footer, nothing from another origin, and the provenance line, which nothing removes). `PUBLIC_BASE_PATH` carries one path prefix into every link an embedded instance writes. Machine representations are untouched. §4.4 gains a clause.
 >
@@ -299,8 +301,8 @@ This is a split in design and build units, not necessarily in deployment. One co
 | Actor | Capabilities |
 |---|---|
 | **Applicant** | An unverified party with an open Prefix application and nothing else. |
-| **Org admin** | Manage members, grant and revoke authorization scopes, set the organization's publication policy, request renewal, initiate transfer. |
-| **Org member** | Membership is itself authorization to act under the Prefix in Part Two, unless the owner has narrowed it with scopes. |
+| **Org admin** | A member holding `admin` on a branch (§6.2): adds members; grants and revokes roles on that branch and beneath it, to members of the organization; removes members if they administer the whole of it (`*`). Later: grant authorization scopes to other organizations, set the publication policy, request renewal, initiate transfer. |
+| **Org member** | Belongs to the organization. Membership alone authorizes nothing: it is the precondition for holding a **role on a branch** (§6.2), and the role decides what the member may do and where. |
 | **Operator — Reviewer** | Verification decisions; restricted-Prefix requests. |
 | **Operator — Steward** | Reviewer rights plus disputes, forced transfers, suspensions, and reserved/restricted list changes. Two-steward rule on irreversible acts. |
 
@@ -320,9 +322,23 @@ This is a split in design and build units, not necessarily in deployment. One co
 | `verification` | jsonb | Method, evidence, verified_at, verified_by |
 | `created / modified` | timestamptz | |
 
-### 6.2 `member`
+### 6.2 `member`, and the roles members hold
 
-Organization ↔ user with role `author · admin`. Authentication identity (OIDC subject) lives on `user`; authorization lives here.
+`member` is organization ↔ user, and nothing more. Authentication identity (OIDC subject) lives on `user`; what a member may do lives in **`role_grant`** (migration 14; `member_role` was taken by the enum of `member.role`, the column this replaces and a later migration drops). One row per grant:
+
+| Column | |
+|---|---|
+| `org_id`, `user_id` | the organization the grant is within, and the member who holds it |
+| `branch` | a name or Prefix, or `*` — everything the organization may act on: every Prefix it holds and every §8.3 grant made to it, now and later |
+| `reach` | `branch` (default): the name and everything beneath it, on whole segments — `acme.xyz` covers `acme.xyz` and `acme.xyz.temp`, never `acme.xyzzy`. `name`: exactly that one name, for a person who should work on a single Profile. `*` is always a branch. |
+| `roles` | any combination of **`register`** (claim a name; release one — possible only before anything is published under it, so it undoes a registration), **`publish`** (publish a version, deprecate one, change the stewardship fields) and **`admin`** (grant and revoke roles within the branch; add members) |
+| `granted_by`, `granted_at`, `revoked_by`, `revoked_at` | a role is revoked, never deleted; a re-grant on the same (member, branch, reach) revokes the old row and writes a new one, so the record reads as what was held when |
+
+**An act needs three things at once:** membership of the organization holding the Prefix (or of one holding a §8.3 grant covering the name); a role covering the name, of the kind the act needs; and a token carrying the matching scope (§15.2). The organization decides what the *person* may do; the person decides what each *token* may do, so an assistant's token can stay narrower than its owner. There is no `author` role: on the Registry, creating is registering and changing is publishing a new version, and drafting happens off it (§13.2, §20.3).
+
+**Admins grant only within what they administer.** An admin on `acme.xyz` may grant any role — `admin` included — on `acme.xyz` or any branch or name beneath it, to any member; never on `acme` or `acme.abc`. An admin of a single name may grant only on that name. An admin on `*` administers everything, and only an admin on `*` may remove a member (which revokes every role they held). Any admin may add a member — anyone who has signed in once, found by email — because membership alone grants nothing. Granting `admin` beneath one's own branch is how a standards body delegates to a committee and the committee to a working group: §25 Q6's chain, contained inside one organization and bounded by the branch at every step.
+
+**Guards.** A person acting as admin cannot leave the organization without an admin on `*`, if it had one. The operator keeps what it had — it creates Prefixes, organizations and users, adds members and appoints first admins (`npm run operator -- role grant …`), and may act anywhere, for repairs. Every grant, revocation, addition and removal is on the audit chain and, like `member.add`, redacted in the public journal (§20.1): who inside an organization may act where is that organization's affair, and who *did* act is already public on every act (§4.3).
 
 ### 6.3 `allocation`
 
@@ -402,6 +418,7 @@ Spec §7.3 requires only that the owner's authorization exist; how an owner gove
 - Optional: the owner grants a scope to another organization — `ashrae.135` covers that name and anything beginning `ashrae.135.`. Grantee members then register and publish within the scope. **Scope is a string prefix, not a tree**: nothing requires `ashrae.135` itself to be registered, and no interior name need exist.
 - Revocation takes effect for future acts only. Published versions are immutable and unaffected — governance never rewrites history.
 - Scopes may not overlap, and are not re-delegable at v1. *Watch item:* the standards-body pattern (`ashrae` → committee → working group) may need chains sooner than expected (§25 Q6).
+- *Within* an organization, a member's reach is the branches their roles cover (§6.2); *across* organizations, it is the grant. The two compose: an organization granted `ashrae.135` assigns roles on `ashrae.135` or beneath it to its own members, through its own admins, and its `*` roles cover the grant. The grant bounds what the organization may do; its roles decide which of its people do it.
 - On transfer, every grant lapses by default: the seam honours a grant only while `granted_by_org_id` is the allocation's current holder (§6.4), so a former holder's grants stop counting the moment the Prefix changes hands, without a workflow having to find and revoke them. The new holder re-grants, or accepts by re-issuing the record in its own name.
 
 ### 8.4 Transfers
@@ -481,6 +498,7 @@ There is deliberately no endpoint anywhere in the operator plane to alter, unpub
 | `allocation-released` (`released`, `requested`, `reserved`) | no holder | refused | refused — and what is published keeps resolving |
 | `no-membership` / `no-covering-scope` | the owner's authorization does not exist for this user | refused | refused |
 | `scope-not-active`, `scope-expired`, `scope-not-from-current-holder` | the grant the user relies on is not the current holder's live authorization | refused | refused |
+| `no-role` | the organization may act here, but this member holds no role covering the name of the kind the act needs (§6.2): `register` to register or release, `publish` to publish, deprecate or steward. The detail names the role, so the person knows what to ask their admin for. | refused | refused |
 
 Organization status is not on this list, by design: it is not a ground the specification states, so a steward who suspends an organization expresses it as allocation locks and grant suspensions (§7.1), which are.
 
@@ -1284,7 +1302,7 @@ Section renumbering in the spec: Header §6.4→§6.6, worked example §6.6→§
 4. **Who reviews the reviewers.** Steward appointment and the two-steward rule are asserted, not designed. A charter is needed before Phase 3 — and it matters more than it looks, since the specification makes the Registry a single institution whose continued good behavior spec §7.4 explicitly declines to rely on.
 5. **The registrar role stays vacant.** No party registers Prefixes on behalf of others. The part split and organization model leave room to accredit one later without redesign.
 6. **Delegation chains.** Standards bodies subdivide more than twice (`ashrae` → committee → working group). v1 forbids re-delegation; the pattern may force it early.
-7. **Two rules in §5 and §8.3 have no mechanism — surfaced while building the spine.** (a) §5 says membership "is itself authorization to act under the Prefix in Part Two, **unless the owner has narrowed it with scopes**," but §6.4's `authorization_record` grants scope to *another organization* and has no form that narrows a member of the holder. As written, membership is unconditional and the narrowing clause is unimplementable. Either §6.4 gains an intra-organization form, or §5 drops the clause. (b) ~~§8.3 says scopes "are not re-delegable at v1," but nothing records *which organization granted* a record~~ **Settled 12 Sept 2026:** `granted_by_org_id` (migration 9); the seam honours a grant only from the allocation's current holder, which enforces no-re-delegation and revoke-on-transfer with one comparison. (a) remains open. Both are load-bearing the moment a standards body arrives, which is also what Q6 is about.
+7. **Two rules in §5 and §8.3 have no mechanism — surfaced while building the spine.** (a) §5 says membership "is itself authorization to act under the Prefix in Part Two, **unless the owner has narrowed it with scopes**," but §6.4's `authorization_record` grants scope to *another organization* and has no form that narrows a member of the holder. As written, membership is unconditional and the narrowing clause is unimplementable. Either §6.4 gains an intra-organization form, or §5 drops the clause. (b) ~~§8.3 says scopes "are not re-delegable at v1," but nothing records *which organization granted* a record~~ **Settled 12 Sept 2026:** `granted_by_org_id` (migration 9); the seam honours a grant only from the allocation's current holder, which enforces no-re-delegation and revoke-on-transfer with one comparison. (a) **Settled 9 October 2026: roles on branches (§6.2).** §5's narrowing clause is now the role step: membership is the precondition, a role on a branch or a single name is the permission, and admins grant within what they administer. Q6's chains follow inside an organization, bounded by the branch.
 8. **Allocation term expiry is recorded and unenforced.** `allocation.expires_at` exists (§6.3) and nothing reads it: the redemption transition of §7.2 is what moves `status`, and that is Phase 2 work. Until then an allocation whose term lapsed years ago still authorizes writes. Harmless while the operator holds nearly everything; a real gap the moment §8.2 renewal is announced to holders.
 9. **§8.1 has one verification method, and it excludes real claimants.** Domain control via DNS TXT or `/.well-known/` proves control of a *web identity*, which two of the seven grandfathered claimants (`ibb`, `skycentrics`) simply do not have — their recorded websites are Google Docs. A second method is needed before Phase 2, and the obvious candidate is an operator attestation: a steward records direct contact with the claimant as evidence, with rationale, in place of an automated challenge. That trades a machine-checkable proof for a human one, so it needs the two-steward discipline of §5 and a published record — which is also why it interacts with Q4, who reviews the reviewers.
 10. **~~The 2026 revision is in draft, and the public repository still carries the 2022 one.~~ Settled 16 September 2026: the revision is published.** [github.com/CNSCP/specification](https://github.com/CNSCP/specification) now carries the 2026 revision on `main`, with the December 2022 text kept unchanged under `2022/` as history. This design's normative anchor is repinned to it (`072d4435…be6c0e`, 136,899 bytes), and the pinned bytes are served publicly, so the pin itself is checkable by anyone.

@@ -23,6 +23,7 @@ import { registerAuthoringRoutes, type Credential } from '../src/part-two/routes
 import { registerResolutionRoutes } from '../src/part-three/routes.ts';
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import type { OwnershipStore } from '../src/part-one/types.ts';
+import { asMember } from './support/members.ts';
 
 /** Part One, down. Every question the seam is asked goes unanswered. */
 class DownStore implements OwnershipStore {
@@ -36,6 +37,9 @@ class DownStore implements OwnershipStore {
     throw new Error('connect ECONNREFUSED (part one is down)');
   }
   async authorizationsForAllocation(): Promise<never> {
+    throw new Error('connect ECONNREFUSED (part one is down)');
+  }
+  async rolesOfUser(): Promise<never> {
     throw new Error('connect ECONNREFUSED (part one is down)');
   }
 }
@@ -81,10 +85,7 @@ before(async () => {
       credential.userId = user.rows[0]!.id;
     }
     // Only the author is a member of the operator org.
-    await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [
-      seeded.orgId,
-      AUTHOR.userId,
-    ]);
+    await asMember(client, seeded.orgId, AUTHOR.userId, 'admin');
     await client.query('COMMIT');
   } finally {
     client.release();
@@ -237,9 +238,6 @@ describe('the healthy path: the seam decides, registered_by decides nothing', ()
     assert.equal(response.statusCode, 403, 'the fallback must not widen the healthy path');
     // Restore.
     const { rows } = await db.query<{ id: string }>(`SELECT id FROM organization WHERE is_operator`);
-    await db.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [
-      rows[0]!.id,
-      AUTHOR.userId,
-    ]);
+    await asMember(db, rows[0]!.id, AUTHOR.userId, 'admin');
   });
 });

@@ -17,6 +17,7 @@ import { record, head, verify, hashSubject } from '../src/audit.ts';
 import { applySeed, buildPlan } from '../src/seed/seed.ts';
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { authorizes } from '../src/part-one/authorizes.ts';
+import { asMember } from './support/members.ts';
 
 let harness: Harness;
 let db: pg.Pool;
@@ -492,10 +493,7 @@ describe('the bootstrap, end to end (§10.2)', () => {
           `INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|staff', 'staff@padi.io') RETURNING id`,
         )
       ).rows[0]!.id;
-      await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [
-        orgId,
-        userId,
-      ]);
+      await asMember(client, orgId, userId, 'admin');
 
       const actor = { userId, kind: 'human' as const };
 

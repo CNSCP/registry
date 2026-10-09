@@ -3,7 +3,12 @@
  *
  *   npm run operator -- user find --email jane@cimetrics.com
  *   npm run operator -- user add --email jane@cimetrics.com --name "Jane Doe" --by anto@padi.io
- *   npm run operator -- member add --org "Cimetrics Inc." --user jane@cimetrics.com [--role admin] --by anto@padi.io
+ *   npm run operator -- member add --org "Cimetrics Inc." --user jane@cimetrics.com --by anto@padi.io
+ *   npm run operator -- member remove --org "Cimetrics Inc." --user jane@cimetrics.com --by anto@padi.io
+ *   npm run operator -- role grant --org "Cimetrics Inc." --user jane@cimetrics.com --branch '*' --roles admin,register,publish --by anto@padi.io
+ *   npm run operator -- role grant --org "Acme" --user fred@acme.com --branch acme.xyz.temp --name-only --roles publish --by anto@padi.io
+ *   npm run operator -- role revoke --org "Cimetrics Inc." --id <role id> --by anto@padi.io
+ *   npm run operator -- role list --org "Cimetrics Inc."
  *   npm run operator -- credential mint --user jane@cimetrics.com --kind human \
  *       --scopes register,steward,release,publish --label "Jane, Cimetrics author" --by anto@padi.io
  *   npm run operator -- credential mint --user anto@padi.io --kind agent --principal anto@padi.io \
@@ -46,6 +51,7 @@ import { keyIsTrusted, verifyAnchor, type AnchorDocument } from '../distribution
 import { keyList } from '../distribution/anchor-store.ts';
 import { renameOrganization } from '../part-one/organization.ts';
 import { parseScopes, SCOPES } from '../part-two/routes.ts';
+import { addMember, grantRole, liveRolesOfOrg, parseRoles, removeMember, revokeRole, type RoleActor } from '../part-one/roles.ts';
 
 const [noun, verb, ...rest] = process.argv.slice(2);
 
@@ -57,6 +63,9 @@ const { values } = parseArgs({
     'org': { type: 'string' },
     'user': { type: 'string' },
     'role': { type: 'string' },
+    'roles': { type: 'string' },
+    'branch': { type: 'string' },
+    'name-only': { type: 'boolean' },
     'kind': { type: 'string' },
     'principal': { type: 'string' },
     'scopes': { type: 'string' },
@@ -85,6 +94,11 @@ function usage(problem?: string): never {
   npm run operator -- user find --email <email>
   npm run operator -- user add --email <email> --name "<display name>" --by <operator email>
   npm run operator -- member add --org "<org name or id>" --user <email or id> [--role author|admin] --by <operator email>
+  npm run operator -- member remove --org "<org name or id>" --user <email or id> --by <operator email>
+  npm run operator -- role grant --org "<org>" --user <email or id> --branch <'*' | prefix | name> [--name-only]
+                                 --roles <register,publish,admin> --by <operator email>
+  npm run operator -- role revoke --org "<org>" --id <role id> --by <operator email>
+  npm run operator -- role list --org "<org>"
   npm run operator -- credential mint --user <email or id> --kind human|service|agent [--principal <email>]
                                         --scopes <a,b,c> --label "<what it is for>" --by <operator email>
   npm run operator -- credential list
@@ -145,10 +159,12 @@ async function main(): Promise<void> {
       for (const i of ids.rows) console.log(`  identity   ${i.provider.padEnd(7)} ${i.email}  last seen ${i.last_seen.toISOString().slice(0, 10)}`);
       if (ids.rows.length === 0) console.log(`  identity   none — has not signed in yet`);
       const ms = await getPool().query<{ name: string; role: string; prefixes: string[] | null }>(
-        `SELECT o.name, m.role::text AS role,
+        `SELECT o.name,
+                coalesce((SELECT string_agg(array_to_string(g.roles, '+') || ' on ' || CASE WHEN g.reach = 'name' THEN 'name ' ELSE '' END || g.branch, '; ' ORDER BY g.branch)
+                            FROM role_grant g WHERE g.org_id = o.id AND g.user_id = m.user_id AND g.revoked_at IS NULL), 'no roles') AS role,
                 (SELECT array_agg(a.tlp ORDER BY a.tlp) FROM allocation a WHERE a.org_id = o.id AND a.status IN ('active','locked')) AS prefixes
            FROM member m JOIN organization o ON o.id = m.org_id WHERE m.user_id = $1 ORDER BY o.name`, [u.id]);
-      for (const m of ms.rows) console.log(`  member     ${m.role.padEnd(7)} ${m.name}  →  ${(m.prefixes ?? []).map((t) => `cp:${t}`).join(' ') || '(no Prefix held)'}`);
+      for (const m of ms.rows) console.log(`  member     ${m.name}  [${m.role}]  →  ${(m.prefixes ?? []).map((t) => `cp:${t}`).join(' ') || '(no Prefix held)'}`);
       if (ms.rows.length === 0) console.log(`  member     of nothing — tokens will be refused with no-membership until: npm run operator -- member add --org "…" --user ${u.email} --by <you>`);
       const cs = await getPool().query<{ id: string; label: string; kind: string; scopes: string[]; revoked_at: Date | null; last_used_at: Date | null }>(
         `SELECT id, label, kind, scopes, revoked_at, last_used_at FROM credential WHERE app_user_id = $1 ORDER BY created_at`, [u.id]);
@@ -179,27 +195,87 @@ async function main(): Promise<void> {
 
   if (noun === 'member' && verb === 'add') {
     if (!values.org || !values.user) usage('member add needs --org and --user.');
-    const role = values.role ?? 'author';
-    if (role !== 'author' && role !== 'admin') usage('--role is author or admin.');
+    // Membership alone authorizes nothing (§6.2). --role is kept as a shorthand
+    // for the common case — author: register+publish on *, admin: admin besides —
+    // so the runbooks that use it keep working; without it, grant with `role grant`.
+    const role = values.role;
+    if (role !== undefined && role !== 'author' && role !== 'admin') usage('--role is author or admin.');
+    const who = requireBy();
+    const actor: RoleActor = { kind: 'operator', principal: who };
+    const result = await inTransaction(async (db) => {
+      const org = await orgId(db, values.org!);
+      const user = await userId(db, values.user!);
+      const { added } = await addMember(db, { orgId: org, userId: user, actor });
+      if (role) {
+        await grantRole(db, { orgId: org, userId: user, branch: '*', roles: role === 'admin' ? ['admin', 'register', 'publish'] : ['register', 'publish'], actor });
+      }
+      return { org, user, added };
+    });
+    console.log(
+      (result.added ? `member added: user ${result.user} → org ${result.org}` : 'already a member') +
+        (role ? `; ${role === 'admin' ? 'admin+register+publish' : 'register+publish'} on *` : '; no roles yet — grant with: npm run operator -- role grant …'),
+    );
+    return;
+  }
+
+  if (noun === 'member' && verb === 'remove') {
+    if (!values.org || !values.user) usage('member remove needs --org and --user.');
     const who = requireBy();
     const result = await inTransaction(async (db) => {
       const org = await orgId(db, values.org!);
       const user = await userId(db, values.user!);
-      const { rowCount } = await db.query(
-        `INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, $3)
-         ON CONFLICT ON CONSTRAINT member_unique_per_org DO NOTHING`,
-        [org, user, role],
-      );
-      if (!rowCount) return { org, user, added: false };
-      await record(db, {
-        actor: who, actor_kind: 'operator', principal: who, org_id: org,
-        action: 'member.add', subject_type: 'member', subject_id: user,
-        after: { org_id: org, user_id: user, role },
-        rationale: `Membership added by ${who}: authorization to act under the organization's Prefixes (design §5).`,
-      });
-      return { org, user, added: true };
+      return removeMember(db, { orgId: org, userId: user, actor: { kind: 'operator', principal: who } });
     });
-    console.log(result.added ? `member added: user ${result.user} → org ${result.org} as ${role}` : `already a member; nothing changed`);
+    console.log(result.removed ? `member removed; ${result.revoked} role(s) revoked with it` : 'not a member; nothing changed');
+    return;
+  }
+
+  if (noun === 'role' && verb === 'grant') {
+    if (!values.org || !values.user || !values.branch || !values.roles) usage('role grant needs --org, --user, --branch and --roles.');
+    const who = requireBy();
+    const row = await inTransaction(async (db) => {
+      const org = await orgId(db, values.org!);
+      const user = await userId(db, values.user!);
+      return grantRole(db, {
+        orgId: org,
+        userId: user,
+        branch: values.branch!,
+        reach: values['name-only'] ? 'name' : 'branch',
+        roles: parseRoles(values.roles!),
+        actor: { kind: 'operator', principal: who },
+      });
+    });
+    console.log(`role ${row.id}: ${row.roles.join('+')} on ${row.reach === 'name' ? 'the name ' : ''}${row.branch}`);
+    return;
+  }
+
+  if (noun === 'role' && verb === 'revoke') {
+    if (!values.org || !values.id) usage('role revoke needs --org and --id.');
+    const who = requireBy();
+    const row = await inTransaction(async (db) => {
+      const org = await orgId(db, values.org!);
+      return revokeRole(db, { orgId: org, roleId: values.id!, actor: { kind: 'operator', principal: who } });
+    });
+    console.log(`revoked ${row.roles.join('+')} on ${row.branch}`);
+    return;
+  }
+
+  if (noun === 'role' && verb === 'list') {
+    if (!values.org) usage('role list needs --org.');
+    const db = getPool();
+    const client = await db.connect();
+    try {
+      const org = await orgId(client, values.org);
+      const rows = await liveRolesOfOrg(client, org);
+      const emails = await client.query<{ id: string; email: string }>(`SELECT id, email FROM app_user WHERE id = ANY($1::uuid[])`, [rows.map((r) => r.user_id)]);
+      const email = new Map(emails.rows.map((e) => [e.id, e.email]));
+      for (const r of rows) {
+        console.log(`${r.id}  ${(email.get(r.user_id) ?? r.user_id).padEnd(32)} ${r.roles.join('+').padEnd(24)} ${r.reach === 'name' ? 'name   ' : 'branch '} ${r.branch}`);
+      }
+      if (rows.length === 0) console.log('no live roles');
+    } finally {
+      client.release();
+    }
     return;
   }
 

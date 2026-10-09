@@ -13,6 +13,7 @@ import type {
   Membership,
   Organization,
   OwnershipStore,
+  RoleGrant,
 } from './types.ts';
 
 export class PgOwnershipStore implements OwnershipStore {
@@ -46,6 +47,15 @@ export class PgOwnershipStore implements OwnershipStore {
   async membershipsOfUser(userId: string): Promise<Membership[]> {
     const { rows } = await this.db.query<Membership>(
       `SELECT org_id, user_id, role FROM member WHERE user_id = $1`,
+      [userId],
+    );
+    return rows;
+  }
+
+  async rolesOfUser(userId: string): Promise<RoleGrant[]> {
+    const { rows } = await this.db.query<RoleGrant>(
+      `SELECT org_id, user_id, branch, reach, roles FROM role_grant
+        WHERE user_id = $1 AND revoked_at IS NULL`,
       [userId],
     );
     return rows;

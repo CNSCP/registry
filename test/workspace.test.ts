@@ -44,6 +44,7 @@ import { darkForms } from '../src/workspace/store.ts';
 import { workspaceCredentialsFromEnv, mayWriteWorkspace } from '../src/workspace/credential.ts';
 import { workspaceConfigFromEnv } from '../src/workspace/config.ts';
 import { contentHash } from '../src/profile/store.ts';
+import { asMember } from './support/members.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = parseCorpus(JSON.parse(readFileSync(resolve(here, 'fixtures/cp-padi-io-profiles.json'), 'utf8')));
@@ -114,7 +115,7 @@ before(async () => {
       `INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|operator', 'anto@padi.io') RETURNING id`,
     );
     OPERATOR.userId = user.rows[0]!.id;
-    await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [seeded.orgId, OPERATOR.userId]);
+    await asMember(client, seeded.orgId, OPERATOR.userId, 'admin');
     // onuma leaves the operator's custody, so the workspace has a name held
     // by SOMEONE ELSE to refuse.
     const out = await transferTlp(client, {

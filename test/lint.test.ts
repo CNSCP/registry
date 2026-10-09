@@ -20,6 +20,7 @@ import { registerAuthoringRoutes, type Credential } from '../src/part-two/routes
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { lint, tally, type Finding } from '../src/profile/lint.ts';
 import { parseProfileVersion } from '../src/profile/spec2026.ts';
+import { asMember } from './support/members.ts';
 
 const AGENT: Credential = {
   token: 'lint-agent-'.padEnd(40, 'a'),
@@ -89,9 +90,7 @@ before(async () => {
     const user = await client.query<{ id: string }>(
       `INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|lint', 'anto@padi.io') RETURNING id`,
     );
-    await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [
-      seeded.orgId, user.rows[0]!.id,
-    ]);
+    await asMember(client, seeded.orgId, user.rows[0]!.id, 'admin');
     for (const c of [AGENT, PUBLISHER, NO_SCOPES]) c.userId = user.rows[0]!.id;
     await client.query('COMMIT');
   } catch (e) {

@@ -19,6 +19,7 @@ import { registerResolutionRoutes } from '../src/part-three/routes.ts';
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { findByToken, hashToken, list, mint, revoke, touch } from '../src/credentials/store.ts';
 import { verify } from '../src/audit.ts';
+import { asMember } from './support/members.ts';
 
 let harness: Harness;
 let db: pg.Pool;
@@ -36,7 +37,7 @@ before(async () => {
     const u = await client.query<{ id: string }>(`INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|cred', 'anto@padi.io') RETURNING id`);
     userId = u.rows[0]!.id;
     ENV.userId = userId;
-    await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [seeded.orgId, userId]);
+    await asMember(client, seeded.orgId, userId, 'admin');
     await client.query('COMMIT');
   } finally {
     client.release();

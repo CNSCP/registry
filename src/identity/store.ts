@@ -205,7 +205,7 @@ export async function revokeSession(db: Queryable, rowId: string): Promise<void>
 export type AccountView = {
   user: { id: string; email: string; displayName: string | null };
   identities: { provider: ProviderName; email: string; displayName: string | null; firstSeen: Date; lastSeen: Date }[];
-  memberships: { orgId: string; orgName: string; role: string; prefixes: string[] }[];
+  memberships: { orgId: string; orgName: string; role: string; prefixes: string[]; roles: RoleSummary[] }[];
   credentials: {
     id: string;
     label: string;
@@ -236,6 +236,11 @@ export async function accountView(db: Queryable, userId: string): Promise<Accoun
       WHERE m.user_id = $1 ORDER BY o.name`,
     [userId],
   );
+  const roles = await db.query<RoleRowLite>(
+    `SELECT id, org_id, user_id, branch, reach::text AS reach, roles FROM role_grant
+      WHERE user_id = $1 AND revoked_at IS NULL ORDER BY branch`,
+    [userId],
+  );
   const credentials = await db.query<{
     id: string; label: string; kind: string; principal: string | null; scopes: string[];
     created_at: Date; last_used_at: Date | null; revoked_at: Date | null;
@@ -248,10 +253,72 @@ export async function accountView(db: Queryable, userId: string): Promise<Accoun
   return {
     user: { id: user.rows[0].id, email: user.rows[0].email, displayName: user.rows[0].display_name },
     identities: identities.rows.map((r) => ({ provider: r.provider, email: r.email, displayName: r.display_name, firstSeen: r.first_seen, lastSeen: r.last_seen })),
-    memberships: memberships.rows.map((r) => ({ orgId: r.org_id, orgName: r.org_name, role: r.role, prefixes: r.prefixes ?? [] })),
+    memberships: memberships.rows.map((r) => ({
+      orgId: r.org_id, orgName: r.org_name, role: r.role, prefixes: r.prefixes ?? [],
+      roles: roles.rows.filter((g) => g.org_id === r.org_id).map(summary),
+    })),
     credentials: credentials.rows.map((r) => ({
       id: r.id, label: r.label, kind: r.kind, principal: r.principal, scopes: r.scopes,
       createdAt: r.created_at, lastUsedAt: r.last_used_at, revokedAt: r.revoked_at,
     })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// What an admin sees (§6.2): the organizations they administer, their
+// members, and every member's live roles.
+// ---------------------------------------------------------------------------
+
+type RoleRowLite = { id: string; org_id: string; user_id: string; branch: string; reach: 'branch' | 'name'; roles: string[] };
+export type RoleSummary = { id: string; branch: string; reach: 'branch' | 'name'; roles: string[] };
+const summary = (r: RoleRowLite): RoleSummary => ({ id: r.id, branch: r.branch, reach: r.reach, roles: r.roles });
+
+export type AdministeredOrg = {
+  orgId: string;
+  orgName: string;
+  /** The admin's own admin rows here — what they may grant within. */
+  mine: RoleSummary[];
+  prefixes: string[];
+  members: { userId: string; email: string; displayName: string | null; roles: RoleSummary[] }[];
+};
+
+export async function administeredOrgs(db: Queryable, userId: string): Promise<AdministeredOrg[]> {
+  const mine = await db.query<RoleRowLite & { org_name: string }>(
+    `SELECT g.id, g.org_id, g.user_id, g.branch, g.reach::text AS reach, g.roles, o.name AS org_name
+       FROM role_grant g JOIN organization o ON o.id = g.org_id
+      WHERE g.user_id = $1 AND g.revoked_at IS NULL AND 'admin' = ANY(g.roles)
+      ORDER BY o.name, g.branch`,
+    [userId],
+  );
+  const orgIds = [...new Set(mine.rows.map((r) => r.org_id))];
+  const out: AdministeredOrg[] = [];
+  for (const orgId of orgIds) {
+    const members = await db.query<{ user_id: string; email: string; display_name: string | null }>(
+      `SELECT m.user_id, u.email, u.display_name FROM member m JOIN app_user u ON u.id = m.user_id
+        WHERE m.org_id = $1 ORDER BY u.email`,
+      [orgId],
+    );
+    const roles = await db.query<RoleRowLite>(
+      `SELECT id, org_id, user_id, branch, reach::text AS reach, roles FROM role_grant
+        WHERE org_id = $1 AND revoked_at IS NULL ORDER BY branch`,
+      [orgId],
+    );
+    const prefixes = await db.query<{ tlp: string }>(
+      `SELECT tlp FROM allocation WHERE org_id = $1 AND status IN ('active','locked') ORDER BY tlp`,
+      [orgId],
+    );
+    out.push({
+      orgId,
+      orgName: mine.rows.find((r) => r.org_id === orgId)!.org_name,
+      mine: mine.rows.filter((r) => r.org_id === orgId).map(summary),
+      prefixes: prefixes.rows.map((r) => r.tlp),
+      members: members.rows.map((m) => ({
+        userId: m.user_id,
+        email: m.email,
+        displayName: m.display_name,
+        roles: roles.rows.filter((r) => r.user_id === m.user_id).map(summary),
+      })),
+    });
+  }
+  return out;
 }

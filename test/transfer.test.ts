@@ -30,6 +30,7 @@ import { renameOrganization } from '../src/part-one/organization.ts';
 import { verify as verifyChain } from '../src/audit.ts';
 import { journalFromAudit } from '../src/distribution/store.ts';
 import { bootstrap, sync, type Fetch } from '../src/distribution/follower.ts';
+import { asMember } from './support/members.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = parseCorpus(JSON.parse(readFileSync(resolve(here, 'fixtures/cp-padi-io-profiles.json'), 'utf8')));
@@ -80,7 +81,7 @@ before(async () => {
     await runImport(c, corpus, planImport(corpus));
     const a = await c.query<{ id: string }>(`INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|anto', 'anto@padi.io') RETURNING id`);
     anto = a.rows[0]!.id;
-    await c.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [operatorOrg, anto]);
+    await asMember(c, operatorOrg, anto, 'admin');
     const m = await c.query<{ id: string }>(`INSERT INTO app_user (oidc_subject, email) VALUES ('google|matt', 'hollar.matthew@gmail.com') RETURNING id`);
     matt = m.rows[0]!.id;
   });
@@ -181,7 +182,7 @@ describe('the transfer', () => {
     const a = await authorizes(ownership, { userId: anto, kind: 'human' }, 'ibb.zone.new', { intent: 'register' });
     assert.equal(a.allowed, false);
     const c4sb = await db.query<{ id: string }>(`SELECT id FROM organization WHERE name = $1`, [C4SB]);
-    await db.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [c4sb.rows[0]!.id, matt]);
+    await asMember(db, c4sb.rows[0]!.id, matt, 'admin');
     const m = await authorizes(ownership, { userId: matt, kind: 'human' }, 'ibb.zone.new', { intent: 'register' });
     assert.equal(m.allowed, true);
     const still = await authorizes(ownership, { userId: matt, kind: 'human' }, 'padi.new', { intent: 'register' });
@@ -192,7 +193,7 @@ describe('the transfer', () => {
     // Set up a grant on a still-operator-held Prefix, then transfer it.
     const grantee = await db.query<{ id: string }>(`INSERT INTO organization (name, status) VALUES ('Grantee Co', 'active') RETURNING id`);
     const g = await db.query<{ id: string }>(`INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|g', 'g@grantee.example') RETURNING id`);
-    await db.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'author')`, [grantee.rows[0]!.id, g.rows[0]!.id]);
+    await asMember(db, grantee.rows[0]!.id, g.rows[0]!.id, 'author');
     const alloc = await db.query<{ id: string; org_id: string }>(`SELECT id, org_id FROM allocation WHERE tlp = 'c4sb'`);
     await db.query(
       `INSERT INTO authorization_record (allocation_id, scope, grantee_org_id, status, granted_by_org_id) VALUES ($1, 'c4sb.granted', $2, 'active', $3)`,

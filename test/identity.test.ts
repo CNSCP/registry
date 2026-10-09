@@ -18,6 +18,7 @@ import {
 } from '../src/identity/store.ts';
 import { mint } from '../src/credentials/store.ts';
 import { verify } from '../src/audit.ts';
+import { asMember } from './support/members.ts';
 
 let harness: Harness;
 let db: pg.Pool;
@@ -33,7 +34,7 @@ before(async () => {
       `INSERT INTO app_user (oidc_subject, email, display_name) VALUES ('local|matt@example.org', 'Matt@Example.org', 'Matt') RETURNING id`,
     );
     preCreated = u.rows[0]!.id;
-    await c.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'author')`, [orgId, preCreated]);
+    await asMember(c, orgId, preCreated, 'author');
   });
 });
 

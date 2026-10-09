@@ -134,14 +134,14 @@ export async function registerPartOneRoutes(app: FastifyInstance, deps: RoutesDe
    * Part Two changing. In a single-process deployment, call `authorizes()`
    * directly; the function is the interface, this route is one transport.
    */
-  app.post<{ Body: { actor?: { userId?: string; kind?: string; principal?: string }; name?: string; intent?: string } }>(
+  app.post<{ Body: { actor?: { userId?: string; kind?: string; principal?: string }; name?: string; intent?: string; role?: string } }>(
     '/internal/authorizes',
     async (request, reply) => {
       if (!presentedValidToken(request.headers.authorization)) {
         return reply.code(401).send({ error: 'the seam requires a bearer token (§4.4)' });
       }
 
-      const { actor, name, intent } = request.body ?? {};
+      const { actor, name, intent, role } = request.body ?? {};
       if (typeof name !== 'string' || typeof actor?.userId !== 'string' || !actor.userId || !name) {
         return reply
           .code(400)
@@ -150,12 +150,15 @@ export async function registerPartOneRoutes(app: FastifyInstance, deps: RoutesDe
       if (intent !== undefined && intent !== 'register' && intent !== 'publish') {
         return reply.code(400).send({ error: 'intent must be "register" or "publish"' });
       }
+      if (role !== undefined && role !== 'register' && role !== 'publish') {
+        return reply.code(400).send({ error: 'role must be "register" or "publish"' });
+      }
 
       const decision = await authorizes(
         store,
         { userId: actor.userId, kind: (actor.kind as ActorKind) ?? 'human', principal: actor.principal },
         name,
-        intent === undefined ? {} : { intent },
+        { ...(intent === undefined ? {} : { intent }), ...(role === undefined ? {} : { role }) },
       );
 
       // Always 200: a denial is a successful answer to the question asked.

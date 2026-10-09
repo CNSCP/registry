@@ -68,7 +68,18 @@ export interface OwnershipStore {
   organizationById(orgId: string): Promise<Organization | null>;
   membershipsOfUser(userId: string): Promise<Membership[]>;
   authorizationsForAllocation(allocationId: string): Promise<AuthorizationRecord[]>;
+  /** The user's LIVE roles (§6.2), across every organization. */
+  rolesOfUser(userId: string): Promise<RoleGrant[]>;
 }
+
+/** One live role row, as the seam sees it (§6.2). */
+export type RoleGrant = {
+  org_id: string;
+  user_id: string;
+  branch: string;
+  reach: 'branch' | 'name';
+  roles: ('register' | 'publish' | 'admin')[];
+};
 
 /** Who is asking. `userId` is the app_user id, never the OIDC subject. */
 export type Actor = {

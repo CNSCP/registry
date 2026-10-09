@@ -12,14 +12,31 @@ attaching them to the organization that holds their Prefix.
 1. **They sign in** at https://cp.cnscp.io/account with Google or GitHub. That creates their
    account, or links the identity to an account that already carries the same verified
    email (an operator-created row, or their other provider). The Registry keeps no password.
-2. **You attach them to the organization** that holds the Prefix they will author under.
-   This is the act that decides where their tokens may act; nothing on a token does.
+2. **An admin of the organization adds them and grants their roles**, on `/account` under
+   "Organizations you administer" (design §6.2). Membership alone lets them do nothing; the
+   roles decide what and where:
+
+   - **`register`**: claim names, and release one before anything is published under it
+   - **`publish`**: publish versions, deprecate them, change Owner or Website
+   - **`admin`**: grant roles within the branch, and add members
+
+   each on a **branch** (`cimetrics.ak` covers that name and everything beneath it), on a
+   single **name** ("this name only"), or on **`*`**, everything the organization holds.
+   An admin grants only within what they administer.
+
+   The operator does this only for an organization's **first admin**, or for repairs:
 
    ```sh
    kubectl -n cp-registry exec deploy/registry -- \
      npm run operator -- user find --email jane@cimetrics.com          # what the Registry knows
    kubectl -n cp-registry exec deploy/registry -- \
-     npm run operator -- member add --org "Cimetrics Inc." --user jane@cimetrics.com --role author --by anto@padi.io
+     npm run operator -- member add --org "Cimetrics Inc." --user jane@cimetrics.com --role admin --by anto@padi.io
+   # --role admin is shorthand for: role grant --branch '*' --roles admin,register,publish
+   # (--role author: register,publish). Narrower grants:
+   kubectl -n cp-registry exec deploy/registry -- \
+     npm run operator -- role grant --org "Cimetrics Inc." --user jane@cimetrics.com \
+       --branch cimetrics.ak --roles register,publish --by anto@padi.io
+   kubectl -n cp-registry exec deploy/registry -- npm run operator -- role list --org "Cimetrics Inc."
    ```
 
    `member add` works before they have signed in, too: a row created with `user add` is

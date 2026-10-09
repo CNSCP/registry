@@ -44,6 +44,7 @@ import {
   type Snapshot,
 } from '../src/distribution/journal.ts';
 import { bootstrap, sync, type Fetch } from '../src/distribution/follower.ts';
+import { asMember } from './support/members.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = parseCorpus(JSON.parse(readFileSync(resolve(here, 'fixtures/cp-padi-io-profiles.json'), 'utf8')));
@@ -106,7 +107,7 @@ before(async () => {
       `INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|operator', 'anto@padi.io') RETURNING id`,
     );
     OPERATOR.userId = user.rows[0]!.id;
-    await client.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [seeded.orgId, OPERATOR.userId]);
+    await asMember(client, seeded.orgId, OPERATOR.userId, 'admin');
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');

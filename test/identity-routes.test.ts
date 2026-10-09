@@ -19,6 +19,7 @@ import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
 import { findByToken, touch } from '../src/credentials/store.ts';
 import { verify } from '../src/audit.ts';
 import { journalFromAudit } from '../src/distribution/store.ts';
+import { asMember } from './support/members.ts';
 
 let harness: Harness;
 let db: pg.Pool;
@@ -37,7 +38,7 @@ before(async () => {
     orgId = (await applySeed(c)).orgId;
     // The operator created Anto's row in advance and made him a member.
     const u = await c.query<{ id: string }>(`INSERT INTO app_user (oidc_subject, email, display_name) VALUES ('local|anto@padi.io', 'anto@padi.io', 'Anto B') RETURNING id`);
-    await c.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [orgId, u.rows[0]!.id]);
+    await asMember(c, orgId, u.rows[0]!.id, 'admin');
     await c.query('COMMIT');
   } finally {
     c.release();
@@ -331,5 +332,62 @@ describe('when something goes wrong', () => {
     assert.equal(res.statusCode, 401);
     assert.match(String(res.headers['content-type']), /application\/json/);
     assert.equal(res.json().kind, 'registry-refusal');
+  });
+});
+
+describe('administering an organization on /account (§6.2)', () => {
+  const post = (j: ReturnType<typeof jar>, url: string, fields: Record<string, string | string[]>) =>
+    app.inject({ method: 'POST', url, headers: { ...j.header(), 'content-type': 'application/x-www-form-urlencoded' }, payload: form(fields) });
+
+  test('an admin adds a member by email and grants a single-name role; the member sees it; nothing else changes', async () => {
+    const { j: anto } = await signIn('google');
+    const page = await app.inject({ method: 'GET', url: '/account', headers: anto.header() });
+    assert.match(page.body, /Organizations you administer/);
+    assert.ok(page.body.includes(`id="org-${orgId}"`));
+    const csrf = await csrfOf(anto);
+
+    const added = await post(anto, `/account/orgs/${orgId}/members`, { csrf, email: 'someone@example.org' });
+    assert.equal(added.statusCode, 303, added.body);
+    const someone = (await db.query<{ id: string }>(`SELECT id FROM app_user WHERE email = 'someone@example.org'`)).rows[0]!.id;
+
+    const granted = await post(anto, `/account/orgs/${orgId}/roles`, { csrf, user: someone, branch: 'padi.test.someone', name_only: '1', role: ['register', 'publish'] });
+    assert.equal(granted.statusCode, 303, granted.body);
+    const rows = await db.query<{ branch: string; reach: string; roles: string[] }>(
+      `SELECT branch, reach::text AS reach, roles FROM role_grant WHERE user_id = $1 AND revoked_at IS NULL`, [someone]);
+    assert.deepEqual(rows.rows, [{ branch: 'padi.test.someone', reach: 'name', roles: ['register', 'publish'] }]);
+
+    const { j: them } = await signIn('github');
+    const theirs = await app.inject({ method: 'GET', url: '/account', headers: them.header() });
+    assert.match(theirs.body, /<strong>register<\/strong> \+ <strong>publish<\/strong> on the name <code>padi\.test\.someone<\/code>/);
+    assert.doesNotMatch(theirs.body, /Organizations you administer/, 'a member without admin administers nothing');
+  });
+
+  test('a member who is not an admin is refused, with the reason; nothing is written', async () => {
+    const { j: them } = await signIn('github');
+    const csrf = await csrfOf(them);
+    const someone = (await db.query<{ id: string }>(`SELECT id FROM app_user WHERE email = 'someone@example.org'`)).rows[0]!.id;
+    const before = await db.query(`SELECT count(*)::int AS n FROM role_grant`);
+    const res = await post(them, `/account/orgs/${orgId}/roles`, { csrf, user: someone, branch: 'padi', role: 'admin' });
+    assert.equal(res.statusCode, 403);
+    assert.match(res.body, /is not an admin of the branch padi/);
+    const after = await db.query(`SELECT count(*)::int AS n FROM role_grant`);
+    assert.deepEqual(after.rows, before.rows);
+  });
+
+  test('an unknown email is explained, a forged form refused, and a revoke takes effect', async () => {
+    const { j: anto } = await signIn('google');
+    const csrf = await csrfOf(anto);
+    const unknown = await post(anto, `/account/orgs/${orgId}/members`, { csrf, email: 'nobody@example.org' });
+    assert.equal(unknown.statusCode, 400);
+    assert.match(unknown.body, /has signed in to the Registry yet/);
+    const forged = await post(anto, `/account/orgs/${orgId}/members`, { csrf: 'nope', email: 'someone@example.org' });
+    assert.equal(forged.statusCode, 403);
+
+    const role = (await db.query<{ id: string }>(
+      `SELECT g.id FROM role_grant g JOIN app_user u ON u.id = g.user_id WHERE u.email = 'someone@example.org' AND g.revoked_at IS NULL`)).rows[0]!;
+    const revoked = await post(anto, `/account/orgs/${orgId}/roles/${role.id}/revoke`, { csrf });
+    assert.equal(revoked.statusCode, 303, revoked.body);
+    const live = await db.query(`SELECT 1 FROM role_grant WHERE id = $1 AND revoked_at IS NULL`, [role.id]);
+    assert.equal(live.rowCount, 0);
   });
 });

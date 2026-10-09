@@ -236,6 +236,28 @@ export async function allocateTlp(db: Queryable, request: AllocateRequest): Prom
       after: { org_id: orgId, user_id: request.memberUserId, role: 'admin' },
       rationale: `Day-one actor for "${request.tlp}": an allocation nobody can write under is a mistake, not a holding.`,
     });
+    // Membership alone authorizes nothing (§6.2): the day-one actor is the
+    // organization's first admin, over everything it holds.
+    const live = await db.query(
+      `SELECT 1 FROM role_grant WHERE org_id = $1 AND user_id = $2 AND branch = '*' AND revoked_at IS NULL`,
+      [orgId, request.memberUserId],
+    );
+    if (live.rows.length === 0) {
+      const role = await db.query<{ id: string }>(
+        `INSERT INTO role_grant (org_id, user_id, branch, reach, roles, granted_by)
+         VALUES ($1, $2, '*', 'branch', ARRAY['admin','register','publish'], $3) RETURNING id`,
+        [orgId, request.memberUserId, request.actor.principal ?? request.actor.id],
+      );
+      await record(db, {
+        ...auditActor,
+        org_id: orgId,
+        action: 'role.grant',
+        subject_type: 'role_grant',
+        subject_id: role.rows[0]!.id,
+        after: { user_id: request.memberUserId, branch: '*', reach: 'branch', roles: ['admin', 'register', 'publish'] },
+        rationale: `First admin of the organization holding "${request.tlp}" (design §6.2).`,
+      });
+    }
   }
 
   return {

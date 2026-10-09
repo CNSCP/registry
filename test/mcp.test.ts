@@ -23,6 +23,7 @@ import { applySeed } from '../src/seed/seed.ts';
 import { registerAuthoringRoutes, type Credential } from '../src/part-two/routes.ts';
 import { registerResolutionRoutes } from '../src/part-three/routes.ts';
 import { PgOwnershipStore } from '../src/part-one/pg-store.ts';
+import { asMember } from './support/members.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -65,10 +66,7 @@ before(async () => {
       `INSERT INTO app_user (oidc_subject, email) VALUES ('oidc|mcp', 'anto@padi.io') RETURNING id`,
     );
     AUTHOR.userId = user.rows[0]!.id;
-    await pgClient.query(`INSERT INTO member (org_id, user_id, role) VALUES ($1, $2, 'admin')`, [
-      seeded.orgId,
-      AUTHOR.userId,
-    ]);
+    await asMember(pgClient, seeded.orgId, AUTHOR.userId, 'admin');
     await pgClient.query('COMMIT');
   } finally {
     pgClient.release();

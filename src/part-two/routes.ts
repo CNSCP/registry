@@ -201,11 +201,13 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
     credential: Credential,
     name: string,
     intent: 'register' | 'publish',
+    role?: 'register' | 'publish',
   ): Promise<{ allocationId: string } | null> {
     let decision;
     try {
       decision = await authorizes(ownership, { userId: credential.userId, kind: credential.kind }, name, {
         intent,
+        ...(role ? { role } : {}),
       });
     } catch (error) {
       structuredError(reply, 503, 'seam.unavailable', 'authorization',
@@ -421,7 +423,10 @@ export async function registerAuthoringRoutes(app: FastifyInstance, deps: Author
         'A published version is never deleted (spec §6.2, §9.3).');
     }
 
-    const authz = await authorizeEdit(reply, authed.credential, name);
+    // Release needs the REGISTER role — it undoes a registration, and is
+    // possible only before anything is published (§13.5, §6.2) — while keeping
+    // the edit path's intent, so a closed allocation does not trap a name.
+    const authz = await authorizeWrite(reply, authed.credential, name, 'publish', 'register');
     if (!authz) return;
 
     const client = await pool.connect();

@@ -28,7 +28,7 @@
 
 import { nameProblem, tlpOf, scopeCovers } from '../names.ts';
 import { isSpecReserved, isWithheld } from '../policy.ts';
-import type { Actor, Allocation, OwnershipStore } from './types.ts';
+import type { Actor, Allocation, OwnershipStore, RoleGrant } from './types.ts';
 
 export type Intent =
   /** Register a new name beneath the Prefix, or create/modify its Draft. */
@@ -54,7 +54,8 @@ export type DenyReason =
   | 'no-covering-scope'
   | 'scope-not-active'
   | 'scope-expired'
-  | 'scope-not-from-current-holder';
+  | 'scope-not-from-current-holder'
+  | 'no-role';
 
 export type AllowReason = 'holder-member' | 'authorization-scope';
 
@@ -76,8 +77,17 @@ export type Decision =
       detail: string;
     };
 
+/** The role an act needs (§6.2): `register` to claim or release a name, `publish` for everything done to content. */
+export type NeededRole = 'register' | 'publish';
+
 export type AuthorizesOptions = {
   intent?: Intent;
+  /**
+   * The role the act needs, when it differs from the intent's. Release is the
+   * case: it needs `register` (it undoes a registration) but takes the
+   * `publish` intent, because allocation state gates registration only (§14).
+   */
+  role?: NeededRole;
   /** Injected for testability; defaults to now. Used only for scope expiry. */
   now?: Date;
 };
@@ -175,6 +185,32 @@ function allocationStands(allocation: Allocation): Decision | null {
 }
 
 /**
+ * The role step (§6.2, 9 October 2026). Membership — or a §8.3 grant to one
+ * of the actor's organizations — establishes that the ORGANIZATION may act
+ * here; a role establishes that this PERSON may, for this kind of act. `*`
+ * covers whatever the organization may act on, so it is decided by the path
+ * already taken, never by the name.
+ */
+function roleFor(roles: RoleGrant[], orgId: string, name: string, needed: NeededRole): RoleGrant | null {
+  for (const r of roles) {
+    if (r.org_id !== orgId || !r.roles.includes(needed)) continue;
+    if (r.branch === '*') return r;
+    if (r.reach === 'name' ? name === r.branch : scopeCovers(r.branch, name)) return r;
+  }
+  return null;
+}
+
+function noRole(actor: Actor, name: string, needed: NeededRole, tlp: string, allocationId: string): Decision {
+  return deny(
+    'no-role',
+    `${actor.userId} may act for the organization here, but holds no "${needed}" role covering "${name}" (§6.2); ` +
+      `an admin of that branch can grant it`,
+    tlp,
+    allocationId,
+  );
+}
+
+/**
  * Resolve the whole chain: actor → organization membership → allocation of the
  * name's Prefix, or an authorization scope covering the name → allocation
  * status is active.
@@ -186,6 +222,7 @@ export async function authorizes(
   options: AuthorizesOptions = {},
 ): Promise<Decision> {
   const intent: Intent = options.intent ?? 'register';
+  const needed: NeededRole = options.role ?? (intent === 'register' ? 'register' : 'publish');
   const now = options.now ?? new Date();
 
   // --- The name itself ------------------------------------------------------
@@ -244,18 +281,16 @@ export async function authorizes(
   const holderMembership = memberships.find((m) => m.org_id === allocation.org_id);
 
   if (holderMembership) {
-    // Membership is itself authorization to act under the Prefix (§5). Small
-    // owners need nothing more.
-    //
-    // §5 also says "unless the owner has narrowed it with scopes" — there is no
-    // narrowing mechanism in §6.4 to implement, so membership is currently
-    // unconditional. See §25 Q7.
+    // Membership says the organization may act here; a role says this person
+    // may, for this kind of act (§6.2 — settled 9 October 2026, §25 Q7a).
+    const role = roleFor(await store.rolesOfUser(actor.userId), allocation.org_id, name, needed);
+    if (!role) return noRole(actor, name, needed, tlp, allocation.id);
     return {
       allowed: true,
       reason: 'holder-member',
       allocation_id: allocation.id,
       tlp,
-      detail: `${actor.userId} is a ${holderMembership.role} of the organization holding "${tlp}"`,
+      detail: `${actor.userId} is a member of the organization holding "${tlp}" with "${needed}" on ${role.branch === '*' ? 'everything it holds (*)' : role.reach === 'name' ? `the name ${role.branch}` : `the branch ${role.branch}`}`,
     };
   }
 
@@ -294,6 +329,11 @@ export async function authorizes(
     // grantee cannot grant onward (§8.3: not re-delegable) — both enforced by
     // this one comparison, which is why granted_by_org_id exists (Q7b).
     if (candidate.granted_by_org_id !== allocation.org_id) continue;
+
+    // The grant says the receiving organization may act here; its own roles
+    // say which of its people may (§8.3, §6.2).
+    const role = roleFor(await store.rolesOfUser(actor.userId), candidate.grantee_org_id, name, needed);
+    if (!role) return noRole(actor, name, needed, tlp, allocation.id);
 
     return {
       allowed: true,

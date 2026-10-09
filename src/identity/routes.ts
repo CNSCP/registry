@@ -24,8 +24,9 @@ import { mint, revoke } from '../credentials/store.ts';
 import {
   PROVIDERS, type ProviderName, IdentityRefused,
   linkOrCreate, createSession, findSession, touchSession, revokeSession, signSessionId, verifySessionCookie, accountView,
-  type AccountView,
+  administeredOrgs, type AccountView, type AdministeredOrg, type RoleSummary,
 } from './store.ts';
+import { addMember, grantRole, parseRoles, removeMember, revokeRole, RoleError, ROLES, administers, type RoleActor } from '../part-one/roles.ts';
 import { GoogleProvider, GitHubProvider, ProviderError, type Provider, type FetchLike } from './providers.ts';
 
 export type IdentityConfig = {
@@ -281,7 +282,8 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       if (!current) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
       const view = await accountView(pool, current.userId);
       if (!view) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
-      return html(reply, 200, 'Account', renderAccount(view, csrfFor(current.sessionId, config.sessionSecret)));
+      const admin = await administeredOrgs(pool, current.userId);
+      return html(reply, 200, 'Account', renderAccount(view, csrfFor(current.sessionId, config.sessionSecret), admin));
     });
 
     type MintForm = { csrf?: string; label?: string; kind?: string; scope?: string | string[] };
@@ -350,6 +352,93 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       }
       return noStore(reply).redirect('/account', 302);
     });
+
+    // --- organizations an admin administers (§6.2) ---------------------------
+    //
+    // Every act here runs as the signed-in PERSON, never a token: granting
+    // authority is something people do. Each one is checked by roles.ts —
+    // admins act only within what they administer — and audited there.
+
+    type OrgForm = { csrf?: string; email?: string; user?: string; branch?: string; name_only?: string; role?: string | string[] };
+
+    async function asAdmin(
+      request: FastifyRequest<{ Params: { org: string }; Body: OrgForm }>,
+      reply: FastifyReply,
+      act: (db: pg.PoolClient, actor: RoleActor, body: OrgForm) => Promise<void>,
+    ): Promise<unknown> {
+      const current = await currentSession(request);
+      if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
+      const body = request.body ?? {};
+      if (body.csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+      }
+      const view = await accountView(pool, current.userId);
+      if (!view) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
+      const actor: RoleActor = { kind: 'human', userId: current.userId, email: view.user.email };
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await act(client, actor, body);
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        if (e instanceof RoleError) {
+          const status = e.code === 'role.not-admin' ? 403 : 400;
+          return html(reply, status, 'Refused', `<h1>Refused</h1><p>${escape(e.message)}</p><p><a href="/account#org-${escape(request.params.org)}">Back</a></p>`);
+        }
+        throw e;
+      } finally {
+        client.release();
+      }
+      return noStore(reply).redirect(`/account#org-${request.params.org}`, 303);
+    }
+
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    async function userByEmail(db: pg.PoolClient, email: string): Promise<string> {
+      const { rows } = await db.query<{ id: string }>(`SELECT id FROM app_user WHERE lower(email) = lower($1)`, [email.trim()]);
+      if (!rows[0]) {
+        throw new RoleError('role.no-such-person', `Nobody with the email ${email.trim()} has signed in to the Registry yet. Ask them to sign in once at /account, then add them.`);
+      }
+      return rows[0].id;
+    }
+    function orgParam(org: string): string {
+      if (!UUID_RE.test(org)) throw new RoleError('role.bad-request', 'Not an organization.');
+      return org;
+    }
+    function userParam(user: string | undefined): string {
+      if (!user || !UUID_RE.test(user)) throw new RoleError('role.bad-request', 'Choose a member.');
+      return user;
+    }
+
+    scope.post<{ Params: { org: string }; Body: OrgForm }>('/account/orgs/:org/members', (request, reply) =>
+      asAdmin(request, reply, async (db, actor, body) => {
+        const org = orgParam(request.params.org);
+        await addMember(db, { orgId: org, userId: await userByEmail(db, String(body.email ?? '')), actor });
+      }));
+
+    scope.post<{ Params: { org: string }; Body: OrgForm }>('/account/orgs/:org/members/remove', (request, reply) =>
+      asAdmin(request, reply, async (db, actor, body) => {
+        await removeMember(db, { orgId: orgParam(request.params.org), userId: userParam(body.user), actor });
+      }));
+
+    scope.post<{ Params: { org: string }; Body: OrgForm }>('/account/orgs/:org/roles', (request, reply) =>
+      asAdmin(request, reply, async (db, actor, body) => {
+        const requested = Array.isArray(body.role) ? body.role : body.role ? [body.role] : [];
+        await grantRole(db, {
+          orgId: orgParam(request.params.org),
+          userId: userParam(body.user),
+          branch: String(body.branch ?? '').trim(),
+          reach: body.name_only ? 'name' : 'branch',
+          roles: parseRoles(requested.map(String)),
+          actor,
+        });
+      }));
+
+    scope.post<{ Params: { org: string; id: string }; Body: OrgForm }>('/account/orgs/:org/roles/:id/revoke', (request, reply) =>
+      asAdmin(request as never, reply, async (db, actor) => {
+        if (!UUID_RE.test(request.params.id)) throw new RoleError('role.bad-request', 'Not a role.');
+        await revokeRole(db, { orgId: orgParam(request.params.org), roleId: request.params.id, actor });
+      }));
   });
 }
 
@@ -369,12 +458,52 @@ function date(d: Date | null): string {
   return d ? escape(d.toISOString().slice(0, 16).replace('T', ' ')) : '<em>never</em>';
 }
 
-function renderAccount(view: AccountView, csrf: string): string {
+function roleLine(r: RoleSummary): string {
+  const where = r.branch === '*' ? 'everything the organization holds (<code>*</code>)' : r.reach === 'name' ? `the name <code>${escape(r.branch)}</code>` : `<code>${escape(r.branch)}</code> and beneath`;
+  return `${r.roles.map((x) => `<strong>${escape(x)}</strong>`).join(' + ')} on ${where}`;
+}
+
+const INPUT = 'font:inherit;padding:8px 12px;border:1px solid var(--border);border-radius:8px';
+
+function renderOrg(org: AdministeredOrg, csrf: string): string {
+  const hidden = `<input type="hidden" name="csrf" value="${escape(csrf)}">`;
+  const whole = org.mine.some((r) => r.branch === '*');
+  const base = `/account/orgs/${escape(org.orgId)}`;
+  const rows = org.members.map((m) => {
+    const roles = m.roles.length === 0 ? '<em>no roles</em>' : m.roles.map((r) => {
+      const mayRevoke = org.mine.some((a) => administers(a, { branch: r.branch, reach: r.reach }));
+      return `${roleLine(r)}${mayRevoke ? ` <form method="post" action="${base}/roles/${escape(r.id)}/revoke" style="display:inline">${hidden}<button class="btn" type="submit" style="padding:2px 10px;font-size:.85rem">Revoke</button></form>` : ''}`;
+    }).join('<br>');
+    const remove = whole ? `<form method="post" action="${base}/members/remove" onsubmit="return confirm('Remove ${escape(m.email).replace(/'/g, '&#39;')} and every role they hold here?')">${hidden}<input type="hidden" name="user" value="${escape(m.userId)}"><button class="btn" type="submit" style="padding:2px 10px;font-size:.85rem">Remove</button></form>` : '';
+    return `<tr><td>${escape(m.email)}${m.displayName ? `<br><span class="note">${escape(m.displayName)}</span>` : ''}</td><td>${roles}</td><td>${remove}</td></tr>`;
+  }).join('');
+  const branches = [...(whole ? ['*', ...org.prefixes] : []), ...org.mine.filter((r) => r.branch !== '*').map((r) => r.branch)];
+  const roleBoxes = ROLES.map((r) => `<label style="margin-right:14px"><input type="checkbox" name="role" value="${r}"${r !== 'admin' ? ' checked' : ''}> <code>${r}</code></label>`).join('');
+  return `<h3 id="org-${escape(org.orgId)}">${escape(org.orgName)}</h3>
+<p class="note">You administer ${org.mine.map(roleLine).join('; ')}.</p>
+<div class="card"><table><thead><tr><th>Member</th><th>Roles</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+<form method="post" action="${base}/roles" class="callout">${hidden}
+  <p><strong>Grant roles</strong></p>
+  <p><label>Member<br><select name="user" style="${INPUT}">${org.members.map((m) => `<option value="${escape(m.userId)}">${escape(m.email)}</option>`).join('')}</select></label></p>
+  <p><label>Branch<br><input name="branch" required list="branches-${escape(org.orgId)}" placeholder="e.g. ${escape(org.prefixes[0] ?? 'acme')}.xyz" style="${INPUT};width:min(100%,360px)"></label>
+    <datalist id="branches-${escape(org.orgId)}">${branches.map((b) => `<option value="${escape(b)}">`).join('')}</datalist>
+    <label style="margin-left:12px"><input type="checkbox" name="name_only" value="1"> this name only</label></p>
+  <p>Roles<br>${roleBoxes}</p>
+  <p class="note">A branch covers that name and everything beneath it; <code>*</code> covers everything the organization holds, now and later. <code>register</code> claims and releases names; <code>publish</code> publishes, deprecates and changes Owner or Website; <code>admin</code> lets them grant within the branch. Granting again on the same branch replaces what they had there.</p>
+  <p><button class="btn btn-primary" type="submit">Grant</button></p>
+</form>
+<form method="post" action="${base}/members" class="callout">${hidden}
+  <p><strong>Add a member</strong> &mdash; anyone who has signed in to the Registry once. Membership alone lets them do nothing until you grant a role.</p>
+  <p><input name="email" type="email" required placeholder="their sign-in email" style="${INPUT};width:min(100%,360px)"> <button class="btn btn-primary" type="submit">Add</button></p>
+</form>`;
+}
+
+function renderAccount(view: AccountView, csrf: string, admin: AdministeredOrg[] = []): string {
   const identities = view.identities.map((i) => `<tr><td>${escape(i.provider)}</td><td>${escape(i.email)}</td><td>${escape(i.displayName ?? '')}</td><td>${date(i.firstSeen)}</td><td>${date(i.lastSeen)}</td></tr>`).join('');
   const memberships = view.memberships.length === 0
-    ? `<p class="note">No memberships yet. A token you mint can do nothing until an operator attaches you to the organization that holds the Prefix you author under — ask them, giving the email above.</p>`
-    : `<div class="card"><table><thead><tr><th>Organization</th><th>Role</th><th>Prefixes</th></tr></thead><tbody>${view.memberships.map((m) =>
-        `<tr><td>${escape(m.orgName)}</td><td>${escape(m.role)}</td><td>${m.prefixes.length ? m.prefixes.map((p) => `<code>cp:${escape(p)}</code>`).join(' ') : '<em>none held</em>'}</td></tr>`).join('')}</tbody></table></div>`;
+    ? `<p class="note">No memberships yet. A token you mint can do nothing until an admin of the organization that holds the Prefix you author under adds you and grants you a role — ask them, giving the email above.</p>`
+    : `<div class="card"><table><thead><tr><th>Organization</th><th>Your roles</th><th>Prefixes it holds</th></tr></thead><tbody>${view.memberships.map((m) =>
+        `<tr><td>${escape(m.orgName)}</td><td>${m.roles.length ? m.roles.map(roleLine).join('<br>') : '<em>none yet — ask an admin of the organization</em>'}</td><td>${m.prefixes.length ? m.prefixes.map((p) => `<code>cp:${escape(p)}</code>`).join(' ') : '<em>none held</em>'}</td></tr>`).join('')}</tbody></table></div>`;
   const credentials = view.credentials.length === 0
     ? `<p class="note">No credentials yet.</p>`
     : `<div class="card"><table><thead><tr><th>Label</th><th>Kind</th><th>Scopes</th><th>Minted</th><th>Last used</th><th></th></tr></thead><tbody>${view.credentials.map((c) =>
@@ -389,8 +518,11 @@ function renderAccount(view: AccountView, csrf: string): string {
 <div class="card"><table><thead><tr><th>Provider</th><th>Email</th><th>Name</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${identities}</tbody></table></div>
 
 <h2>Memberships</h2>
-<p class="section-intro">Where your tokens may act. A token carries scopes — what kind of act — but reach comes from membership: an organization that holds a Prefix and counts you as a member.</p>
+<p class="section-intro">Where your tokens may act. An act needs all three: membership of the organization, a role covering the name (granted by its admins), and a token carrying the matching scope.</p>
 ${memberships}
+${admin.length === 0 ? '' : `
+<h2>Organizations you administer</h2>
+${admin.map((o) => renderOrg(o, csrf)).join('\n')}`}
 
 <h2>Credentials</h2>
 ${credentials}
