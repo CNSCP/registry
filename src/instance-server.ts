@@ -28,11 +28,17 @@
  *   CP_WORKSPACE_PRINCIPAL  the person answerable for saves
  *   FORWARD_WRITES          `true` to relay writes on Profile paths to the upstream with the
  *                           caller's own credential (§20.3) instead of answering 405
+ *   PAGE_CHROME             `instance` (default) or `bare`, for a page another application
+ *                           embeds (§19.5); never `site`, which is canon's
+ *   PUBLIC_BASE_PATH        e.g. /registry, when an embedding host proxies this one under a
+ *                           prefix and strips it; every link the HTML writes carries it
+ *   INSTANCE_OPERATOR       the organization id of whoever runs this host; the header shows
+ *                           its name as canon records it (§19.5)
  */
 
 import Fastify from 'fastify';
 import { getPool } from './db.ts';
-import { registerResolutionRoutes } from './part-three/routes.ts';
+import { framingFromEnv, registerResolutionRoutes, setFraming, setVerifiedSeq } from './part-three/routes.ts';
 import { legacyRetirementFromEnv } from './part-three/http.ts';
 import { bootstrap, sync } from './distribution/follower.ts';
 import { registerInstanceRefusals } from './distribution/routes.ts';
@@ -45,6 +51,7 @@ import { darkForms, holders } from './workspace/store.ts';
 const upstream = (process.env['UPSTREAM_URL'] ?? '').replace(/\/+$/, '');
 if (!upstream) throw new Error('UPSTREAM_URL is not set. An instance follows an authoritative host; name it.');
 
+const frame = framingFromEnv('instance');
 const workspaceConfig = workspaceConfigFromEnv();
 const workspaceCredentials = workspaceCredentialsFromEnv();
 if (workspaceConfig && workspaceCredentials.length === 0) {
@@ -61,6 +68,23 @@ const first = await bootstrap(pool, upstream);
 app.log.info(first.bootstrapped ? `bootstrapped from ${upstream} at seq ${first.head?.seq}` : `already bootstrapped; cursor at seq ${first.head?.seq}`);
 const caughtUp = await sync(pool);
 app.log.info(`journal at seq ${caughtUp.cursor.seq}; ${caughtUp.applied} act(s) applied`);
+
+// The frame (§19.5). The operator is named by organization id and shown by the
+// name canon records for it, so the header says nothing this host cannot check.
+const operatorId = (process.env['INSTANCE_OPERATOR'] ?? '').trim();
+let operator: string | null = null;
+if (operatorId !== '') {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operatorId)) {
+    throw new Error(`INSTANCE_OPERATOR=${operatorId}: an organization id (a uuid), as /distribution/snapshot lists it.`);
+  }
+  const found = await pool.query<{ name: string }>('SELECT name FROM organization WHERE id = $1', [operatorId]);
+  if (!found.rows[0]) {
+    throw new Error(`INSTANCE_OPERATOR=${operatorId} is not an organization in this instance's mirror of ${upstream}.`);
+  }
+  operator = found.rows[0].name;
+}
+setFraming({ ...frame, upstream, operator, seq: Number(caughtUp.cursor.seq) });
+app.log.info(`pages: framed "${frame.kind}"${frame.basePath ? ` under ${frame.basePath}` : ''}${operator ? `, operated by "${operator}"` : ''}`);
 
 const html = process.env['RENDER_HTML'] !== 'false';
 
@@ -82,7 +106,7 @@ const catchUp = async (): Promise<void> => {
   if (Date.now() - lastCatchUp < CATCH_UP_EVERY_MS) return;
   lastCatchUp = Date.now();
   try {
-    await sync(pool);
+    setVerifiedSeq((await sync(pool)).cursor.seq);
   } catch (error) {
     app.log.warn(error, 'workspace: catch-up sync failed; answering from the mirror as it stands');
   }
@@ -142,7 +166,10 @@ const interval = Number(process.env['SYNC_INTERVAL_SECONDS'] ?? 60);
 if (interval > 0) {
   const timer = setInterval(() => {
     sync(pool)
-      .then(reportDark)
+      .then((result) => {
+        setVerifiedSeq(result.cursor.seq);
+        return reportDark();
+      })
       .catch((error) => app.log.error(error, 'sync failed; the cursor did not move'));
   }, interval * 1000);
   timer.unref();

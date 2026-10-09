@@ -18,10 +18,13 @@
 
 import Fastify from 'fastify';
 import { getPool } from './db.ts';
-import { registerResolutionRoutes } from './part-three/routes.ts';
+import { framingFromEnv, registerResolutionRoutes, setFraming } from './part-three/routes.ts';
 import { legacyRetirementFromEnv } from './part-three/http.ts';
 
 const app = Fastify({ logger: true });
+
+// A replica of canon wears canon's frame, fixed (§19.5).
+setFraming(framingFromEnv('resolution'));
 
 // The pool, not a checked-out client: resolution is the read path and scales
 // on read replicas (§23).

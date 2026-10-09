@@ -28,7 +28,7 @@ import { getPool } from './db.ts';
 import { PgOwnershipStore } from './part-one/pg-store.ts';
 import { registerAuthoringRoutes, parseScopes, type Credential } from './part-two/routes.ts';
 import { findByToken, touch } from './credentials/store.ts';
-import { registerResolutionRoutes } from './part-three/routes.ts';
+import { framingFromEnv, registerResolutionRoutes, setFraming } from './part-three/routes.ts';
 import { legacyRetirementFromEnv } from './part-three/http.ts';
 import { identityConfigFromEnv, registerIdentityRoutes } from './identity/routes.ts';
 
@@ -68,6 +68,8 @@ await registerAuthoringRoutes(app, {
 });
 // Sign-in and /account (§15.3) mount only when the six CP_OAUTH_* /
 // CP_SESSION_SECRET / CP_PUBLIC_ORIGIN variables are all present.
+// Canon's frame is the site's, and nothing configures it otherwise (§19.5).
+setFraming(framingFromEnv('authoritative'));
 const identity = identityConfigFromEnv();
 if (identity) await registerIdentityRoutes(app, { pool, config: identity });
 await registerResolutionRoutes(app, {

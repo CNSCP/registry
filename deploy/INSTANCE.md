@@ -220,6 +220,29 @@ own verified copy — which gives a boundary one egress point. Drafts do **not**
 them: unpublished content is never in the feed, so a form reaches the public host only when its
 author saves it there.
 
+## How the pages are framed (design §19.5)
+
+An instance's pages are framed as an instance, not as canon: no cnscp.io site navigation, a line
+on every page saying whose copy this is and how far it is verified, and — if you set it — your
+organization's name in the header. Three settings, all optional:
+
+```sh
+export INSTANCE_OPERATOR=<your organization id>   # shown by the name canon records for it
+export PAGE_CHROME=instance                       # or `bare`, for pages another application embeds
+export PUBLIC_BASE_PATH=/registry                 # only when embedded under a path prefix
+```
+
+- **`INSTANCE_OPERATOR`** is an organization id, from the same `jq` line as `WORKSPACE_ORGS`. The
+  header shows the name canon records for it — not free text — and the instance refuses to start
+  if its mirror does not know the id.
+- **`PAGE_CHROME=bare`** drops the header and footer and loads nothing from another origin, for an
+  application that shows the Registry's pages inside its own. One line saying where the page came
+  from stays, by design. `site` is canon's and an instance refuses it.
+- **`PUBLIC_BASE_PATH`** is for an embedding application that reverse-proxies this host under a
+  prefix and strips it on the way in. Every link the pages write then carries the prefix,
+  workspace included (`/registry/workspace`). Machine responses are unchanged. Leave it unset when
+  the instance serves from its own root, as `cp.padi.io` does.
+
 ## Deprecation and stewardship reach you through the journal
 
 A version's Properties never change, so a Governor may cache `GET /<name>:<n>` forever

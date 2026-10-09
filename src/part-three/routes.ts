@@ -768,9 +768,130 @@ export function enableWorkspaceNav(): void {
   workspaceNav = true;
 }
 
+/**
+ * What frames the page — design §19.5.
+ *
+ * The document a page presents is the same on every host; the frame around
+ * it is not, because the hosts are not the same thing. Three frames, chosen
+ * by the HOST and never by the request — one URL, one page (§4.4):
+ *
+ *   site      canon, and canon's own resolution replicas: the cnscp.io site
+ *             navigation, the Registry's Catalog and Account, the footer.
+ *             Fixed: neither entrypoint will boot framed any other way.
+ *   instance  a local instance (§20): no site navigation (every item leaves
+ *             the host, and "Registry" would mean two places), the operator's
+ *             name as canon records it, the instance's own surfaces, and a
+ *             provenance line naming the upstream and how far it is verified.
+ *   bare      an instance another application embeds: no header, no footer,
+ *             nothing fetched from another origin — and the provenance line,
+ *             which no setting removes.
+ *
+ * `basePath` is PUBLIC_BASE_PATH: when an embedding host proxies the instance
+ * under a prefix of its own and strips it, every local link and form action
+ * the HTML writes carries the prefix back. Routing is untouched, and so is
+ * every machine representation — they are not written here.
+ */
+export type FrameKind = 'site' | 'instance' | 'bare';
+export type Framing = {
+  kind: FrameKind;
+  basePath: string;
+  /** The host an instance follows, for the provenance line. */
+  upstream: string | null;
+  /** The operator's name as canon records it (INSTANCE_OPERATOR, read from the mirror). */
+  operator: string | null;
+  /** How far this host has followed and verified the journal. */
+  seq: number | null;
+};
+
+const SITE_FRAMING: Framing = { kind: 'site', basePath: '', upstream: null, operator: null, seq: null };
+let framing: Framing = { ...SITE_FRAMING };
+
+export function setFraming(next: Partial<Framing>): void {
+  framing = { ...framing, ...next };
+}
+
+/** Back to canon's frame — for tests that render more than one kind of host. */
+export function resetFraming(): void {
+  framing = { ...SITE_FRAMING };
+}
+
+/** The follower calls this after every sync, so the provenance line says where it stands. */
+export function setVerifiedSeq(seq: number): void {
+  framing = { ...framing, seq: Number(seq) };
+}
+
+export type Entrypoint = 'authoritative' | 'resolution' | 'instance';
+
+/**
+ * PAGE_CHROME and PUBLIC_BASE_PATH, checked at boot. Canon and its replicas
+ * refuse both (other than PAGE_CHROME=site): canon is where the namespace is
+ * cited, and a configuration line does not reframe it. An instance takes
+ * `instance` (the default) or `bare`, never `site` — it must not dress as canon.
+ */
+export function framingFromEnv(entry: Entrypoint, env: NodeJS.ProcessEnv = process.env): { kind: FrameKind; basePath: string } {
+  const raw = (env['PAGE_CHROME'] ?? '').trim().toLowerCase();
+  const base = (env['PUBLIC_BASE_PATH'] ?? '').trim().replace(/\/+$/, '');
+  if (entry !== 'instance') {
+    if (raw !== '' && raw !== 'site') {
+      throw new Error(
+        `PAGE_CHROME=${raw}: the ${entry} host is framed as the site, always (§19.5). ` +
+          'Canon is where the namespace is cited; a configuration line does not reframe it.',
+      );
+    }
+    if (base !== '') {
+      throw new Error(`PUBLIC_BASE_PATH is for an instance another application embeds (§19.5); the ${entry} host serves from its own root.`);
+    }
+    return { kind: 'site', basePath: '' };
+  }
+  const kind = raw === '' ? 'instance' : raw;
+  if (kind !== 'instance' && kind !== 'bare') {
+    throw new Error(`PAGE_CHROME=${raw}: an instance is framed "instance" or "bare" (§19.5) — never "site", which is canon's.`);
+  }
+  if (base !== '' && !/^(\/[A-Za-z0-9_-]+)+$/.test(base)) {
+    throw new Error(`PUBLIC_BASE_PATH=${base}: a path such as /registry — segments of letters, digits, - and _, with no dots (§4.4's routing rule).`);
+  }
+  return { kind, basePath: base };
+}
+
+/** Every local link and form action, carried under the base path. `//host` and absolute URLs are left alone. */
+function underBase(html: string): string {
+  if (framing.basePath === '') return html;
+  return html.replace(/(\s(?:href|action))="\/(?!\/)/g, `$1="${framing.basePath}/`);
+}
+
+function upstreamHost(): string {
+  const up = framing.upstream ?? '';
+  try {
+    return new URL(up).host;
+  } catch {
+    return up;
+  }
+}
+
+/** "An instance of the CP Registry, operated by …, following cp.cnscp.io — verified to seq N." */
+function provenance(lead: string): string {
+  const operated = framing.operator ? `, operated by ${escape(framing.operator)},` : '';
+  const verified =
+    framing.seq === null ? '' : ` &mdash; <a href="/distribution/status">verified to seq ${framing.seq}</a>`;
+  return `${lead} of the CP Registry${operated} following <a href="${escape(framing.upstream ?? '')}">${escape(
+    upstreamHost(),
+  )}</a>${verified}.`;
+}
+
+/** Instance and bare only — canon's style is SITE_STYLE alone, byte for byte. */
+const INSTANCE_STYLE = `
+  .site-header .service-nav{margin-left:auto}
+  .site-header .service-nav ul{border-left:0;padding-left:0}
+  .operator{color:var(--muted);font-weight:600;font-size:.95rem;padding-left:12px;
+    border-left:1px solid var(--border)}
+  .provenance{background:var(--panel);border-bottom:1px solid var(--border);
+    font-size:.88rem;color:var(--muted)}
+  .provenance .wrap{padding-top:8px;padding-bottom:8px}
+  .provenance-note{color:var(--muted);font-size:.85rem;margin:24px 0 16px}`;
+
 export type NavId = 'registry' | 'catalog' | 'workspace' | 'account' | 'legal' | 'about';
 
-function chrome(title: string, active: NavId | null, body: string): string {
+function siteChrome(title: string, active: NavId | null, body: string): string {
   const nav = (id: string, href: string, label: string) =>
     `<li><a${active === id ? ' class="active"' : ''} href="${href}">${label}</a></li>`;
   return `<!doctype html>
@@ -797,6 +918,58 @@ ${body}
     <a href="https://github.com/CNSCP/registry">Source</a> &middot;
     <a href="https://projectarete.io">Project Arete</a></span>
 </div></footer>
+</body></html>`;
+}
+
+/** The frame this host wears (§19.5) around a page's body. */
+function chrome(title: string, active: NavId | null, body: string): string {
+  if (framing.kind === 'site') return siteChrome(title, active, body);
+  return underBase(framing.kind === 'instance' ? instanceChrome(title, active, body) : bareChrome(title, body));
+}
+
+/** An instance's own surfaces — nothing that leaves the host but the upstream link. */
+function instanceChrome(title: string, active: NavId | null, body: string): string {
+  const nav = (id: string, href: string, label: string) =>
+    `<li><a${active === id ? ' class="active"' : ''} href="${href}">${label}</a></li>`;
+  const items = [
+    { id: 'registry', label: 'Registry', href: '/' },
+    ...SERVICE_NAV.filter((i) => i.id === 'catalog' || (i.id === 'workspace' && workspaceNav)),
+  ];
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(title)}</title>
+<link rel="icon" href="https://cnscp.io/favicon.ico">
+<style>${SITE_STYLE}${INSTANCE_STYLE}</style></head><body>
+<header class="site-header"><div class="bar">
+  <a class="brand" href="/"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP<sup class="tm">&trade;</sup></span></a>
+  ${framing.operator ? `<span class="operator">${escape(framing.operator)}</span>` : ''}
+  <nav class="service-nav" aria-label="Registry instance"><ul>
+    ${items.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
+  </ul></nav>
+</div></header>
+<div class="provenance"><div class="wrap">${provenance('An instance')}</div></div>
+${body}
+<footer class="site-footer"><div class="tail">
+  <span>&copy; 2026 Padi Inc. CNS/CP&trade; is a trademark of Padi, Inc. &middot; Openly specified &mdash; one namespace, interoperable by design.</span>
+  <span><a href="https://cnscp.io">cnscp.io</a> &middot;
+    <a href="${escape(framing.upstream ?? '')}">${escape(upstreamHost())}</a> &middot;
+    <a href="https://github.com/CNSCP/registry">Source</a></span>
+</div></footer>
+</body></html>`;
+}
+
+/** For embedding: the document and its strip, the provenance line, and nothing from another origin. */
+function bareChrome(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escape(title)}</title>
+<style>${SITE_STYLE}${INSTANCE_STYLE}</style></head><body>
+<div class="cp-registry">
+${body}
+<div class="wrap"><p class="provenance-note">${provenance('From an instance')}</p></div>
+</div>
 </body></html>`;
 }
 
@@ -1035,6 +1208,16 @@ function renderAllocation(
   );
 }
 
+/** An instance's front page says what it is: a verified copy, and of what (§19.5). */
+function instanceLead(): string {
+  const host = escape(upstreamHost());
+  return `<span class="eyebrow">A CP Registry instance</span>
+  <h1>Every Connection Profile, by name.</h1>
+  <p class="lead">A verified copy of the CP Registry at <a href="${escape(framing.upstream ?? '')}">${host}</a> —
+    every published <span class="mono">cp:</span> Connection Profile, byte for byte, checked against
+    the Registry's audit chain as it arrives. Profiles are published at ${host}; this host resolves them.</p>`;
+}
+
 /**
  * The front page. Most human visits to the canonical host land here, so it
  * is a real landing page rather than a bare table — but it stays what every
@@ -1073,11 +1256,11 @@ function renderIndex(
 
   return chrome('CP Registry — Connection Profiles by name', 'registry', `
 <div class="hero"><div class="wrap">
-  <span class="eyebrow">The CP Registry</span>
+  ${framing.kind === 'site' ? `<span class="eyebrow">The CP Registry</span>
   <h1>Every Connection Profile, by name.</h1>
   <p class="lead">The canonical registry of <span class="mono">cp:</span> Connection Profiles —
     small, immutable contracts that systems resolve at connection time. One namespace, so every
-    use of CNS/CP stays interoperable.</p>
+    use of CNS/CP stays interoperable.</p>` : instanceLead()}
   <form class="search-row" action="/profiles" method="get">
     <input name="q" placeholder="Search profiles — a name, a word, a purpose&hellip;" autofocus>
     <button class="btn btn-primary">Search</button>
@@ -1105,7 +1288,9 @@ function renderIndex(
 </div></section>
 <section class="section"><div class="wrap">
   <h2>Resolving</h2>
-  <p class="section-intro">A Profile resolves at the root of this host —
+  <p class="section-intro">A Profile resolves at the ${
+    framing.basePath === '' ? 'root of this host' : `<span class="mono">${escape(framing.basePath)}</span> path of this host`
+  } —
     no key, no account: resolution is public by specification.</p>
   <div class="callout"><span class="mono">GET /&lt;name&gt;</span> lists a name's versions
     &middot; <span class="mono">GET /&lt;name&gt;:&lt;version&gt;</span> is the immutable
