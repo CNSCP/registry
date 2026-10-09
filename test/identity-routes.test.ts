@@ -408,6 +408,15 @@ describe('administering an organization on /account (§6.2)', () => {
       assert.equal(res.statusCode, 200, url);
       assert.match(res.body, new RegExp(`<a class="active" href="[^"]+">${label}</a>`), url);
       assert.doesNotMatch(res.body, /<script/, `${url} runs no script`);
+      // Who sees it, and who is signed in — on every tab.
+      assert.match(res.body, /Signed in as <code>anto@padi\.io<\/code>/, url);
+      assert.match(res.body, /action="\/auth\/signout"/, `${url}: sign-out lives in the band`);
+      if (label === 'Organizations') {
+        assert.match(res.body, /class="account-band shared"/, url);
+        assert.match(res.body, /Shared with the admins of /, url);
+      } else {
+        assert.match(res.body, /Private: only you see this page\./, url);
+      }
     }
     const credentials = await app.inject({ method: 'GET', url: '/account/credentials', headers: anto.header() });
     assert.match(credentials.body, /Mint a credential/);

@@ -301,19 +301,19 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
     scope.get('/account', async (request, reply) => {
       const s = await signedIn(request, reply);
       if (!s) return;
-      return html(reply, 200, 'Account', renderTabs('profile', s.admin.length > 0) + renderProfile(s.view, s.csrf));
+      return html(reply, 200, 'Account', renderTabs('profile', s.admin.length > 0, renderBand({ kind: 'private' }, s.view.user.email, s.csrf)) + renderProfile(s.view));
     });
 
     scope.get('/account/memberships', async (request, reply) => {
       const s = await signedIn(request, reply);
       if (!s) return;
-      return html(reply, 200, 'Memberships', renderTabs('memberships', s.admin.length > 0) + renderMemberships(s.view));
+      return html(reply, 200, 'Memberships', renderTabs('memberships', s.admin.length > 0, renderBand({ kind: 'private' }, s.view.user.email, s.csrf)) + renderMemberships(s.view));
     });
 
     scope.get('/account/credentials', async (request, reply) => {
       const s = await signedIn(request, reply);
       if (!s) return;
-      return html(reply, 200, 'Credentials', renderTabs('credentials', s.admin.length > 0) + renderCredentials(s.view, s.csrf));
+      return html(reply, 200, 'Credentials', renderTabs('credentials', s.admin.length > 0, renderBand({ kind: 'private' }, s.view.user.email, s.csrf)) + renderCredentials(s.view, s.csrf));
     });
 
     scope.get('/account/orgs', async (request, reply) => {
@@ -321,7 +321,7 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       if (!s) return;
       // One organization to administer: open straight onto it.
       if (s.admin.length === 1) return noStore(reply).redirect(`/account/orgs/${s.admin[0]!.orgId}`, 302);
-      return html(reply, 200, 'Organizations', renderTabs('orgs', s.admin.length > 0) + renderOrgPicker(s.admin, null) + (s.admin.length === 0
+      return html(reply, 200, 'Organizations', renderTabs('orgs', s.admin.length > 0, renderBand({ kind: 'shared', orgName: null }, s.view.user.email, s.csrf)) + renderOrgPicker(s.admin, null) + (s.admin.length === 0
         ? `<p class="note">You administer no organization. An organization's admins add members and grant roles here.</p>`
         : `<p class="note">Choose an organization.</p>`));
     });
@@ -331,10 +331,10 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       if (!s) return;
       const org = s.admin.find((o) => o.orgId === request.params.org);
       if (!org) {
-        return html(reply, 404, 'Not yours to administer', renderTabs('orgs', s.admin.length > 0) +
+        return html(reply, 404, 'Not yours to administer', renderTabs('orgs', s.admin.length > 0, renderBand({ kind: 'private' }, s.view.user.email, s.csrf)) +
           `<h1>Not yours to administer</h1><p>You are not an admin of that organization. <a href="/account/orgs">Back</a></p>`);
       }
-      return html(reply, 200, org.orgName, renderTabs('orgs', true) + renderOrgPicker(s.admin, org.orgId) + renderOrg(org, s.csrf));
+      return html(reply, 200, org.orgName, renderTabs('orgs', true, renderBand({ kind: 'shared', orgName: org.orgName }, s.view.user.email, s.csrf)) + renderOrgPicker(s.admin, org.orgId) + renderOrg(org, s.csrf));
     });
 
     type MintForm = { csrf?: string; label?: string; kind?: string; scope?: string | string[] };
@@ -560,23 +560,47 @@ const TAB_STYLE = `<style>
   .tabs a.active{border-color:var(--border);background:#fff;color:var(--blue);font-weight:650}
   .org-pills{margin:-8px 0 20px}
   .account-roles td:nth-child(2){min-width:22em}
+  .account-band{background:#f3f0ff;border:1px solid #ddd6fe;border-radius:10px;padding:10px 16px;
+    margin:0 0 22px;font-size:.93rem;color:#3b2f73}
+  .account-band.shared{background:#fff7ed;border-color:#fed7aa;color:#7c2d12}
+  .account-band code{background:transparent;border:0;padding:0;color:inherit}
+  .linklike{background:none;border:0;padding:0;font:inherit;color:var(--blue);cursor:pointer}
+  .linklike:hover{text-decoration:underline}
 </style>`;
 
-function renderTabs(active: Tab, admin: boolean): string {
+/**
+ * Who sees this page. Every other page on the Registry is public and the same
+ * for everyone; these are not, and say so — private to the person, except an
+ * organization's page, which every admin of that organization sees alike.
+ * The band also says who is signed in, and is where signing out lives.
+ */
+type Audience = { kind: 'private' } | { kind: 'shared'; orgName: string | null };
+
+function renderBand(audience: Audience, email: string, csrf: string): string {
+  const what = audience.kind === 'private'
+    ? '<strong>Private: only you see this page.</strong>'
+    : audience.orgName
+      ? `<strong>Shared with the admins of ${escape(audience.orgName)}.</strong>`
+      : "<strong>Shared with each organization's admins.</strong>";
+  return `<div class="account-band${audience.kind === 'shared' ? ' shared' : ''}"><span aria-hidden="true">&#128274;</span> ${what}
+  Signed in as <code>${escape(email)}</code> &middot;
+  <form method="post" action="/auth/signout" style="display:inline"><input type="hidden" name="csrf" value="${escape(csrf)}"><button class="linklike" type="submit">Sign out</button></form></div>`;
+}
+
+function renderTabs(active: Tab, admin: boolean, band: string): string {
   const tabs: [Tab, string, string][] = [
     ['profile', 'Profile', '/account'],
     ['memberships', 'Memberships', '/account/memberships'],
     ['credentials', 'Credentials', '/account/credentials'],
     ...(admin ? [['orgs', 'Organizations', '/account/orgs'] as [Tab, string, string]] : []),
   ];
-  return `${TAB_STYLE}<h1>Account</h1>
+  return `${TAB_STYLE}${band}<h1>Account</h1>
 <ul class="tabs">${tabs.map(([id, label, href]) => `<li><a${id === active ? ' class="active"' : ''} href="${href}">${label}</a></li>`).join('')}</ul>`;
 }
 
-function renderProfile(view: AccountView, csrf: string): string {
+function renderProfile(view: AccountView): string {
   const identities = view.identities.map((i) => `<tr><td>${escape(i.provider)}</td><td>${escape(i.email)}</td><td>${escape(i.displayName ?? '')}</td><td>${date(i.firstSeen)}</td><td>${date(i.lastSeen)}</td></tr>`).join('');
-  return `<p>${escape(view.user.displayName ?? '')} &middot; <code>${escape(view.user.email)}</code>
-<form method="post" action="/auth/signout" style="display:inline;margin-left:12px"><input type="hidden" name="csrf" value="${escape(csrf)}"><button class="btn" type="submit">Sign out</button></form></p>
+  return `<p>${escape(view.user.displayName ?? '')} &middot; <code>${escape(view.user.email)}</code></p>
 
 <h2>Identities</h2>
 <p class="section-intro">The sign-ins linked to this account. The Registry keeps no password; it asks Google or GitHub who you are.</p>
