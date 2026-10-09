@@ -12,8 +12,8 @@ attaching them to the organization that holds their Prefix.
 1. **They sign in** at https://cp.cnscp.io/account with Google or GitHub. That creates their
    account, or links the identity to an account that already carries the same verified
    email (an operator-created row, or their other provider). The Registry keeps no password.
-2. **An admin of the organization adds them and grants their roles**, on `/account` under
-   "Organizations you administer" (design §6.2). Membership alone lets them do nothing; the
+2. **An admin of the organization adds them and grants their roles**, on `/account`, in the
+   **Organizations** tab (design §6.2). Membership alone lets them do nothing; the
    roles decide what and where:
 
    - **`register`**: claim names, and release one before anything is published under it
@@ -53,7 +53,7 @@ attaching them to the organization that holds their Prefix.
    ```
 
    Without `--create` an unknown name refuses, so a misspelling cannot make a second organization.
-3. **They mint their tokens** on `/account`: a label, a kind, and any subset of the author
+3. **They mint their tokens** on `/account`, in the **Credentials** tab: a label, a kind, and any subset of the author
    scopes. The token is shown once. Their first act should be a rehearsal
    (`check_publishable` / `?dry_run=true`) so the token's reach is proven before anything
    permanent happens.

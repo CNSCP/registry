@@ -277,13 +277,64 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
 
     // --- the account page ----------------------------------------------------
 
-    scope.get('/account', async (request, reply) => {
+    // --- /account, as tabs (9 October 2026) ------------------------------------
+    //
+    // Each tab is its own address, so it can be bookmarked and an act returns
+    // the person to the tab they acted on. Plain links styled as tabs: nothing
+    // on the Registry's pages runs script.
+
+    async function signedIn(request: FastifyRequest, reply: FastifyReply) {
       const current = await currentSession(request);
-      if (!current) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+      if (!current) {
+        html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+        return null;
+      }
       const view = await accountView(pool, current.userId);
-      if (!view) return html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+      if (!view) {
+        html(reply, 200, 'Sign in', renderSignIn([...providers.keys()]));
+        return null;
+      }
       const admin = await administeredOrgs(pool, current.userId);
-      return html(reply, 200, 'Account', renderAccount(view, csrfFor(current.sessionId, config.sessionSecret), admin));
+      return { current, view, admin, csrf: csrfFor(current.sessionId, config.sessionSecret) };
+    }
+
+    scope.get('/account', async (request, reply) => {
+      const s = await signedIn(request, reply);
+      if (!s) return;
+      return html(reply, 200, 'Account', renderTabs('profile', s.admin.length > 0) + renderProfile(s.view, s.csrf));
+    });
+
+    scope.get('/account/memberships', async (request, reply) => {
+      const s = await signedIn(request, reply);
+      if (!s) return;
+      return html(reply, 200, 'Memberships', renderTabs('memberships', s.admin.length > 0) + renderMemberships(s.view));
+    });
+
+    scope.get('/account/credentials', async (request, reply) => {
+      const s = await signedIn(request, reply);
+      if (!s) return;
+      return html(reply, 200, 'Credentials', renderTabs('credentials', s.admin.length > 0) + renderCredentials(s.view, s.csrf));
+    });
+
+    scope.get('/account/orgs', async (request, reply) => {
+      const s = await signedIn(request, reply);
+      if (!s) return;
+      // One organization to administer: open straight onto it.
+      if (s.admin.length === 1) return noStore(reply).redirect(`/account/orgs/${s.admin[0]!.orgId}`, 302);
+      return html(reply, 200, 'Organizations', renderTabs('orgs', s.admin.length > 0) + renderOrgPicker(s.admin, null) + (s.admin.length === 0
+        ? `<p class="note">You administer no organization. An organization's admins add members and grant roles here.</p>`
+        : `<p class="note">Choose an organization.</p>`));
+    });
+
+    scope.get<{ Params: { org: string } }>('/account/orgs/:org', async (request, reply) => {
+      const s = await signedIn(request, reply);
+      if (!s) return;
+      const org = s.admin.find((o) => o.orgId === request.params.org);
+      if (!org) {
+        return html(reply, 404, 'Not yours to administer', renderTabs('orgs', s.admin.length > 0) +
+          `<h1>Not yours to administer</h1><p>You are not an admin of that organization. <a href="/account/orgs">Back</a></p>`);
+      }
+      return html(reply, 200, org.orgName, renderTabs('orgs', true) + renderOrgPicker(s.admin, org.orgId) + renderOrg(org, s.csrf));
     });
 
     type MintForm = { csrf?: string; label?: string; kind?: string; scope?: string | string[] };
@@ -293,7 +344,7 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
       const body = request.body ?? {};
       if (body.csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
-        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account/credentials">Back</a></p>`);
       }
       const view = await accountView(pool, current.userId);
       if (!view) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
@@ -302,12 +353,12 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       const requested = (Array.isArray(body.scope) ? body.scope : body.scope ? [body.scope] : []).map(String);
       const unknown = requested.filter((s) => !(ACCOUNT_SCOPES as readonly string[]).includes(s));
       if (unknown.length > 0) {
-        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>Scope${unknown.length > 1 ? 's' : ''} <code>${unknown.map(escape).join('</code>, <code>')}</code> cannot be minted here (§15.3). <a href="/account">Back</a></p>`);
+        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>Scope${unknown.length > 1 ? 's' : ''} <code>${unknown.map(escape).join('</code>, <code>')}</code> cannot be minted here (§15.3). <a href="/account/credentials">Back</a></p>`);
       }
       const scopes = ACCOUNT_SCOPES.filter((s) => requested.includes(s));
       const label = String(body.label ?? '').trim();
       if (scopes.length === 0 || !label) {
-        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>A credential needs a label and at least one scope. <a href="/account">Back</a></p>`);
+        return html(reply, 400, 'Refused', `<h1>Refused</h1><p>A credential needs a label and at least one scope. <a href="/account/credentials">Back</a></p>`);
       }
 
       const client = await pool.connect();
@@ -332,12 +383,12 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       const current = await currentSession(request);
       if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
       if ((request.body ?? {}).csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
-        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account/credentials">Back</a></p>`);
       }
       const view = await accountView(pool, current.userId);
       const own = view?.credentials.find((c) => c.id === request.params.id);
       if (!view || !own) {
-        return html(reply, 404, 'No such credential', `<h1>No such credential</h1><p>Only your own credentials appear here. <a href="/account">Back</a></p>`);
+        return html(reply, 404, 'No such credential', `<h1>No such credential</h1><p>Only your own credentials appear here. <a href="/account/credentials">Back</a></p>`);
       }
       const client = await pool.connect();
       try {
@@ -350,7 +401,7 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       } finally {
         client.release();
       }
-      return noStore(reply).redirect('/account', 302);
+      return noStore(reply).redirect('/account/credentials', 302);
     });
 
     // --- organizations an admin administers (§6.2) ---------------------------
@@ -370,7 +421,7 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
       if (!current) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
       const body = request.body ?? {};
       if (body.csrf !== csrfFor(current.sessionId, config.sessionSecret)) {
-        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account">Back</a></p>`);
+        return html(reply, 403, 'Refused', `<h1>Refused</h1><p>This form was not issued to this session. <a href="/account/credentials">Back</a></p>`);
       }
       const view = await accountView(pool, current.userId);
       if (!view) return html(reply, 401, 'Sign in', renderSignIn([...providers.keys()]));
@@ -384,13 +435,13 @@ export async function registerIdentityRoutes(app: FastifyInstance, deps: Identit
         await client.query('ROLLBACK');
         if (e instanceof RoleError) {
           const status = e.code === 'role.not-admin' ? 403 : 400;
-          return html(reply, status, 'Refused', `<h1>Refused</h1><p>${escape(e.message)}</p><p><a href="/account#org-${escape(request.params.org)}">Back</a></p>`);
+          return html(reply, status, 'Refused', `<h1>Refused</h1><p>${escape(e.message)}</p><p><a href="/account/orgs/${escape(request.params.org)}">Back</a></p>`);
         }
         throw e;
       } finally {
         client.release();
       }
-      return noStore(reply).redirect(`/account#org-${request.params.org}`, 303);
+      return noStore(reply).redirect(`/account/orgs/${request.params.org}`, 303);
     }
 
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -479,9 +530,9 @@ function renderOrg(org: AdministeredOrg, csrf: string): string {
   }).join('');
   const branches = [...(whole ? ['*', ...org.prefixes] : []), ...org.mine.filter((r) => r.branch !== '*').map((r) => r.branch)];
   const roleBoxes = ROLES.map((r) => `<label style="margin-right:14px"><input type="checkbox" name="role" value="${r}"${r !== 'admin' ? ' checked' : ''}> <code>${r}</code></label>`).join('');
-  return `<h3 id="org-${escape(org.orgId)}">${escape(org.orgName)}</h3>
+  return `<h2 id="org-${escape(org.orgId)}">${escape(org.orgName)}</h2>
 <p class="note">You administer ${org.mine.map(roleLine).join('; ')}.</p>
-<div class="card"><table><thead><tr><th>Member</th><th>Roles</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+<div class="card"><table class="account-roles"><thead><tr><th>Member</th><th>Roles</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
 <form method="post" action="${base}/roles" class="callout">${hidden}
   <p><strong>Grant roles</strong></p>
   <p><label>Member<br><select name="user" style="${INPUT}">${org.members.map((m) => `<option value="${escape(m.userId)}">${escape(m.email)}</option>`).join('')}</select></label></p>
@@ -498,48 +549,78 @@ function renderOrg(org: AdministeredOrg, csrf: string): string {
 </form>`;
 }
 
-function renderAccount(view: AccountView, csrf: string, admin: AdministeredOrg[] = []): string {
+type Tab = 'profile' | 'memberships' | 'credentials' | 'orgs';
+
+const TAB_STYLE = `<style>
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin:0 0 28px;padding:0;list-style:none}
+  .tabs li{margin:0}
+  .tabs a{display:block;padding:9px 16px;border:1px solid transparent;border-bottom:0;border-radius:10px 10px 0 0;
+    color:var(--body);font-weight:550;margin-bottom:-1px}
+  .tabs a:hover{background:var(--panel);text-decoration:none}
+  .tabs a.active{border-color:var(--border);background:#fff;color:var(--blue);font-weight:650}
+  .org-pills{margin:-8px 0 20px}
+  .account-roles td:nth-child(2){min-width:22em}
+</style>`;
+
+function renderTabs(active: Tab, admin: boolean): string {
+  const tabs: [Tab, string, string][] = [
+    ['profile', 'Profile', '/account'],
+    ['memberships', 'Memberships', '/account/memberships'],
+    ['credentials', 'Credentials', '/account/credentials'],
+    ...(admin ? [['orgs', 'Organizations', '/account/orgs'] as [Tab, string, string]] : []),
+  ];
+  return `${TAB_STYLE}<h1>Account</h1>
+<ul class="tabs">${tabs.map(([id, label, href]) => `<li><a${id === active ? ' class="active"' : ''} href="${href}">${label}</a></li>`).join('')}</ul>`;
+}
+
+function renderProfile(view: AccountView, csrf: string): string {
   const identities = view.identities.map((i) => `<tr><td>${escape(i.provider)}</td><td>${escape(i.email)}</td><td>${escape(i.displayName ?? '')}</td><td>${date(i.firstSeen)}</td><td>${date(i.lastSeen)}</td></tr>`).join('');
+  return `<p>${escape(view.user.displayName ?? '')} &middot; <code>${escape(view.user.email)}</code>
+<form method="post" action="/auth/signout" style="display:inline;margin-left:12px"><input type="hidden" name="csrf" value="${escape(csrf)}"><button class="btn" type="submit">Sign out</button></form></p>
+
+<h2>Identities</h2>
+<p class="section-intro">The sign-ins linked to this account. The Registry keeps no password; it asks Google or GitHub who you are.</p>
+<div class="card"><table><thead><tr><th>Provider</th><th>Email</th><th>Name</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${identities}</tbody></table></div>`;
+}
+
+function renderMemberships(view: AccountView): string {
   const memberships = view.memberships.length === 0
-    ? `<p class="note">No memberships yet. A token you mint can do nothing until an admin of the organization that holds the Prefix you author under adds you and grants you a role — ask them, giving the email above.</p>`
-    : `<div class="card"><table><thead><tr><th>Organization</th><th>Your roles</th><th>Prefixes it holds</th></tr></thead><tbody>${view.memberships.map((m) =>
+    ? `<p class="note">No memberships yet. A token you mint can do nothing until an admin of the organization that holds the Prefix you author under adds you and grants you a role — ask them, giving your email (${escape(view.user.email)}).</p>`
+    : `<div class="card"><table class="account-roles"><thead><tr><th>Organization</th><th>Your roles</th><th>Prefixes it holds</th></tr></thead><tbody>${view.memberships.map((m) =>
         `<tr><td>${escape(m.orgName)}</td><td>${m.roles.length ? m.roles.map(roleLine).join('<br>') : '<em>none yet — ask an admin of the organization</em>'}</td><td>${m.prefixes.length ? m.prefixes.map((p) => `<code>cp:${escape(p)}</code>`).join(' ') : '<em>none held</em>'}</td></tr>`).join('')}</tbody></table></div>`;
+  return `<p class="section-intro">Where your tokens may act. An act needs all three: membership of the organization, a role covering the name (granted by its admins), and a token carrying the matching scope.</p>
+${memberships}`;
+}
+
+function renderCredentials(view: AccountView, csrf: string): string {
   const credentials = view.credentials.length === 0
     ? `<p class="note">No credentials yet.</p>`
     : `<div class="card"><table><thead><tr><th>Label</th><th>Kind</th><th>Scopes</th><th>Minted</th><th>Last used</th><th></th></tr></thead><tbody>${view.credentials.map((c) =>
         `<tr${c.revokedAt ? ' style="opacity:.55"' : ''}><td><strong>${escape(c.label)}</strong></td><td>${escape(c.kind)}${c.principal && c.kind !== 'human' ? ` <span class="note">for ${escape(c.principal)}</span>` : ''}</td><td>${c.scopes.map((s) => `<code>${escape(s)}</code>`).join(' ')}</td><td>${date(c.createdAt)}</td><td>${date(c.lastUsedAt)}</td><td>${
           c.revokedAt ? `<em>revoked ${date(c.revokedAt)}</em>` : `<form method="post" action="/account/credentials/${escape(c.id)}/revoke" onsubmit="return confirm('Revoke ${escape(c.label).replace(/'/g, '&#39;')}? The token stops working immediately.')"><input type="hidden" name="csrf" value="${escape(csrf)}"><button class="btn" type="submit">Revoke</button></form>`}</td></tr>`).join('')}</tbody></table></div>`;
   const scopeBoxes = ACCOUNT_SCOPES.map((s) => `<label style="margin-right:14px"><input type="checkbox" name="scope" value="${s}"${s === 'register' || s === 'steward' || s === 'release' ? ' checked' : ''}> <code>${s}</code></label>`).join('');
-  return `<h1>Account</h1>
-<p>${escape(view.user.displayName ?? '')} &middot; <code>${escape(view.user.email)}</code>
-<form method="post" action="/auth/signout" style="display:inline;margin-left:12px"><input type="hidden" name="csrf" value="${escape(csrf)}"><button class="btn" type="submit">Sign out</button></form></p>
+  return `${credentials}
 
-<h2>Identities</h2>
-<div class="card"><table><thead><tr><th>Provider</th><th>Email</th><th>Name</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${identities}</tbody></table></div>
-
-<h2>Memberships</h2>
-<p class="section-intro">Where your tokens may act. An act needs all three: membership of the organization, a role covering the name (granted by its admins), and a token carrying the matching scope.</p>
-${memberships}
-${admin.length === 0 ? '' : `
-<h2>Organizations you administer</h2>
-${admin.map((o) => renderOrg(o, csrf)).join('\n')}`}
-
-<h2>Credentials</h2>
-${credentials}
-
-<h3>Mint a credential</h3>
+<h2>Mint a credential</h2>
 <form method="post" action="/account/credentials" class="callout">
   <input type="hidden" name="csrf" value="${escape(csrf)}">
-  <p><label>Label<br><input name="label" required maxlength="120" placeholder="e.g. Claude Desktop, or my laptop" style="font:inherit;padding:8px 12px;border:1px solid var(--border);border-radius:8px;width:min(100%,420px)"></label></p>
-  <p><label>Kind<br><select name="kind" style="font:inherit;padding:8px 12px;border:1px solid var(--border);border-radius:8px">
+  <p><label>Label<br><input name="label" required maxlength="120" placeholder="e.g. Claude Desktop, or my laptop" style="${INPUT};width:min(100%,420px)"></label></p>
+  <p><label>Kind<br><select name="kind" style="${INPUT}">
     <option value="human">human — me, at a keyboard</option>
     <option value="agent">agent — an assistant acting for me</option>
     <option value="service">service — a job or pipeline acting for me</option>
   </select></label></p>
   <p>Scopes<br>${scopeBoxes}</p>
-  <p class="note"><code>register</code> also rehearses a publication (dry run). <code>publish</code> is the one irreversible act; an assistant normally does without it. <code>operator</code> cannot be minted here.</p>
+  <p class="note"><code>register</code> also rehearses a publication (dry run). <code>publish</code> is the one irreversible act; an assistant normally does without it. <code>operator</code> cannot be minted here. A scope says what kind of act the token may do; where it may act is decided by your roles (Memberships).</p>
   <p><button class="btn btn-primary" type="submit">Mint</button></p>
 </form>`;
+}
+
+function renderOrgPicker(orgs: AdministeredOrg[], current: string | null): string {
+  if (orgs.length <= 1) return '';
+  return `<p class="versions org-pills">${orgs.map((o) => o.orgId === current
+    ? `<span class="pill current">${escape(o.orgName)}</span>`
+    : `<a class="pill" href="/account/orgs/${escape(o.orgId)}">${escape(o.orgName)}</a>`).join(' ')}</p>`;
 }
 
 function renderMinted(token: string, label: string, kind: string, scopes: readonly string[]): string {
@@ -547,5 +628,5 @@ function renderMinted(token: string, label: string, kind: string, scopes: readon
 <p>${escape(label)} &middot; ${escape(kind)} &middot; ${scopes.map((s) => `<code>${escape(s)}</code>`).join(' ')}</p>
 <div class="callout"><p><strong>This is the only time the token is shown.</strong> Copy it now; the Registry keeps only its hash.</p>
 <p><code style="font-size:1.05em;user-select:all">${escape(token)}</code></p></div>
-<p>Present it as <code>Authorization: Bearer &lt;token&gt;</code>, or as <code>CP_REGISTRY_TOKEN</code> in an MCP configuration. If it is ever exposed, revoke it on the <a href="/account">account page</a>; a revoked token stops working immediately.</p>`;
+<p>Present it as <code>Authorization: Bearer &lt;token&gt;</code>, or as <code>CP_REGISTRY_TOKEN</code> in an MCP configuration. If it is ever exposed, revoke it on the <a href="/account/credentials">Credentials tab</a>; a revoked token stops working immediately.</p>`;
 }

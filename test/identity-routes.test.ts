@@ -156,8 +156,10 @@ describe('signing in', () => {
     const account = await app.inject({ method: 'GET', url: '/account', headers: j.header() });
     assert.equal(account.statusCode, 200);
     assert.match(account.body, /anto@padi\.io/);
-    assert.match(account.body, /admin/);
-    assert.match(account.body, /<code>cp:padi<\/code>/, 'the Prefixes the membership reaches are listed');
+    const memberships = await app.inject({ method: 'GET', url: '/account/memberships', headers: j.header() });
+    assert.equal(memberships.statusCode, 200);
+    assert.match(memberships.body, /<strong>admin<\/strong>/);
+    assert.match(memberships.body, /<code>cp:padi<\/code>/, 'the Prefixes the membership reaches are listed');
     const users = await db.query(`SELECT 1 FROM app_user WHERE email = 'anto@padi.io'`);
     assert.equal(users.rowCount, 1, 'linked, not duplicated');
   });
@@ -175,7 +177,7 @@ describe('signing in', () => {
 
   test('a new person signing in gets an account with no memberships and is told what that means', async () => {
     const { j } = await signIn('github');
-    const account = await app.inject({ method: 'GET', url: '/account', headers: j.header() });
+    const account = await app.inject({ method: 'GET', url: '/account/memberships', headers: j.header() });
     assert.equal(account.statusCode, 200);
     assert.match(account.body, /No memberships yet/);
   });
@@ -341,9 +343,15 @@ describe('administering an organization on /account (§6.2)', () => {
 
   test('an admin adds a member by email and grants a single-name role; the member sees it; nothing else changes', async () => {
     const { j: anto } = await signIn('google');
-    const page = await app.inject({ method: 'GET', url: '/account', headers: anto.header() });
-    assert.match(page.body, /Organizations you administer/);
+    const profile = await app.inject({ method: 'GET', url: '/account', headers: anto.header() });
+    assert.match(profile.body, /href="\/account\/orgs">Organizations<\/a>/, 'an admin gets the Organizations tab');
+    const orgs = await app.inject({ method: 'GET', url: '/account/orgs', headers: anto.header() });
+    assert.equal(orgs.statusCode, 302, 'one organization to administer: straight onto it');
+    assert.equal(orgs.headers['location'], `/account/orgs/${orgId}`);
+    const page = await app.inject({ method: 'GET', url: `/account/orgs/${orgId}`, headers: anto.header() });
+    assert.equal(page.statusCode, 200);
     assert.ok(page.body.includes(`id="org-${orgId}"`));
+    assert.match(page.body, /Grant roles/);
     const csrf = await csrfOf(anto);
 
     const added = await post(anto, `/account/orgs/${orgId}/members`, { csrf, email: 'someone@example.org' });
@@ -357,9 +365,11 @@ describe('administering an organization on /account (§6.2)', () => {
     assert.deepEqual(rows.rows, [{ branch: 'padi.test.someone', reach: 'name', roles: ['register', 'publish'] }]);
 
     const { j: them } = await signIn('github');
-    const theirs = await app.inject({ method: 'GET', url: '/account', headers: them.header() });
+    const theirs = await app.inject({ method: 'GET', url: '/account/memberships', headers: them.header() });
     assert.match(theirs.body, /<strong>register<\/strong> \+ <strong>publish<\/strong> on the name <code>padi\.test\.someone<\/code>/);
-    assert.doesNotMatch(theirs.body, /Organizations you administer/, 'a member without admin administers nothing');
+    assert.doesNotMatch(theirs.body, /href="\/account\/orgs"/, 'a member without admin gets no Organizations tab');
+    const notTheirs = await app.inject({ method: 'GET', url: `/account/orgs/${orgId}`, headers: them.header() });
+    assert.equal(notTheirs.statusCode, 404, 'nor the organization page, by address');
   });
 
   test('a member who is not an admin is refused, with the reason; nothing is written', async () => {
@@ -389,5 +399,20 @@ describe('administering an organization on /account (§6.2)', () => {
     assert.equal(revoked.statusCode, 303, revoked.body);
     const live = await db.query(`SELECT 1 FROM role_grant WHERE id = $1 AND revoked_at IS NULL`, [role.id]);
     assert.equal(live.rowCount, 0);
+  });
+
+  test('every tab is its own address, carries the tab bar with itself marked, and an act returns to its tab', async () => {
+    const { j: anto } = await signIn('google');
+    for (const [url, label] of [['/account', 'Profile'], ['/account/memberships', 'Memberships'], ['/account/credentials', 'Credentials'], [`/account/orgs/${orgId}`, 'Organizations']]) {
+      const res = await app.inject({ method: 'GET', url, headers: anto.header() });
+      assert.equal(res.statusCode, 200, url);
+      assert.match(res.body, new RegExp(`<a class="active" href="[^"]+">${label}</a>`), url);
+      assert.doesNotMatch(res.body, /<script/, `${url} runs no script`);
+    }
+    const credentials = await app.inject({ method: 'GET', url: '/account/credentials', headers: anto.header() });
+    assert.match(credentials.body, /Mint a credential/);
+    const csrf = await csrfOf(anto);
+    const res = await post(anto, `/account/orgs/${orgId}/members`, { csrf, email: 'someone@example.org' });
+    assert.equal(res.headers['location'], `/account/orgs/${orgId}`);
   });
 });
