@@ -50,6 +50,14 @@ export type Finding = {
 export type LintContext = {
   /** Versions already published under this name, for additivity and permanence. */
   priors?: { version: number; content: ProfileVersion }[];
+  /**
+   * Linting a `test.*` working document on a workspace host (§20.3). Such a
+   * name is never published, so the two findings that only speak of
+   * publication under this name are left out: that `test` is reserved (true,
+   * and the whole point), and the permanence note (nothing becomes permanent).
+   * Every finding about the document as a contract stays.
+   */
+  localTest?: boolean;
 };
 
 /**
@@ -104,6 +112,7 @@ export function lint(profile: Profile, context: LintContext = {}): Finding[] {
     if (f.kind === 'missing-header-field' && (f.field === 'Version' || f.field === 'Pub Date' || f.field === 'Status')) {
       continue;
     }
+    if (context.localTest && f.kind === 'prefix-reserved') continue;
     switch (f.kind) {
       case 'missing-header-field':
         findings.push({
@@ -245,7 +254,7 @@ export function lint(profile: Profile, context: LintContext = {}): Finding[] {
           });
         }
       });
-    } else {
+    } else if (!context.localTest) {
       findings.push({
         check: 'version.permanence',
         severity: 'note',

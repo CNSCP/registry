@@ -399,8 +399,9 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
           } catch (error) {
             return refusal(reply, 422, 'workspace.lint-malformed', (error as Error).message);
           }
-          // No priors: a test name has never published anything to be additive against.
-          const findings = lint(profile, { priors: [] });
+          // No priors: a test name has never published anything to be additive
+          // against. And no findings that speak only of publication (§20.3).
+          const findings = lint(profile, { priors: [], localTest: true });
           reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
           return reply.code(200).send({
             name,

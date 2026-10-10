@@ -1060,9 +1060,15 @@ describe('test.* names on a workspace host (§20.3; spec §7.1; ruled 10 October
     const r = await instanceApp.inject({ method: 'POST', url: '/test.twin/lint', headers: ws(), payload: document('test.twin', [p1]) });
     assert.equal(r.statusCode, 200, r.body);
     assert.equal(r.headers['x-cp-surface'], 'workspace');
-    const body = r.json() as { advisory: boolean; lint: { findings: unknown[] } };
+    const body = r.json() as { advisory: boolean; lint: { findings: { check: string }[] } };
     assert.equal(body.advisory, true);
-    assert.ok(Array.isArray(body.lint.findings));
+    assert.deepEqual(body.lint.findings, [], 'a clean document: no "test is reserved" refusal, no permanence note');
+
+    // Findings about the document as a contract still come through.
+    const directional = document('test.twin', [{ ...p1, Name: 'out_reading' }]);
+    const flagged = await instanceApp.inject({ method: 'POST', url: '/test.twin/lint', headers: ws(), payload: directional });
+    const checks = (flagged.json() as { lint: { findings: { check: string }[] } }).lint.findings.map((f) => f.check);
+    assert.deepEqual(checks, ['property.direction-prefix']);
   });
 
   test('the human pages: the bare name shows the document; the index lists test names, saved or not', async () => {
