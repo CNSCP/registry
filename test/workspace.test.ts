@@ -317,7 +317,13 @@ describe('what the workspace holds (§20.3)', () => {
     assertSameSurface(await machineSurface(upstreamApp), await machineSurface(instanceApp));
   });
 
-  test('a test.* form: admitted, marked as such, listed, absent from the mirror', async () => {
+  test('a test.* form: registered here first, admitted, marked as such, listed, absent from the mirror', async () => {
+    const unregistered = await instanceApp.inject({ method: 'PUT', url: '/test.lab.probe:unpublished', headers: ws(WS_TOKEN_2), payload: document('test.lab.probe', [p1, p2]) });
+    assert.equal(unregistered.statusCode, 404, 'a test name is registered before anything is saved under it (ruled 10 October)');
+    assert.equal((unregistered.json() as { code: string }).code, 'workspace.test-not-registered');
+    const registered = await instanceApp.inject({ method: 'PUT', url: '/test.lab.probe', headers: ws(WS_TOKEN_2) });
+    assert.equal(registered.statusCode, 201, registered.body);
+
     const save = await instanceApp.inject({ method: 'PUT', url: '/test.lab.probe:unpublished', headers: ws(WS_TOKEN_2), payload: document('test.lab.probe', [p1, p2]) });
     assert.equal(save.statusCode, 201, save.body);
     assert.equal((save.json() as { held_as: string }).held_as, 'test');
@@ -326,7 +332,9 @@ describe('what the workspace holds (§20.3)', () => {
     const got = await instanceApp.inject({ method: 'GET', url: '/test.lab.probe:unpublished', headers: { accept: SPEC } });
     assert.equal(got.statusCode, 200);
     const bare = await instanceApp.inject({ method: 'GET', url: '/test.lab.probe', headers: { accept: SPEC } });
-    assert.equal(bare.statusCode, 404, 'nothing under test is ever registered (spec §7.1)');
+    assert.equal(bare.statusCode, 200, 'the bare name resolves to the working document on this host (§20.3)');
+    const inMirror = await instance.pool.query(`SELECT 1 FROM profile WHERE name LIKE 'test.%'`);
+    assert.equal(inMirror.rowCount, 0, 'the registration is the workspace\'s, never the mirror\'s');
     const catalog = await instanceApp.inject({ method: 'GET', url: '/profiles?q=test.lab', headers: { accept: 'application/json' } });
     assert.equal((catalog.json() as { total: number }).total, 0, 'not in the catalog: it is not a registered name');
 
@@ -822,5 +830,275 @@ describe('the MCP tools over the two surfaces (§20.3)', () => {
     const theirs = await text('save_unpublished', { name: 'onuma.building', document: document('onuma.building', [p1]) });
     assert.equal(theirs.isError, true);
     assert.match(theirs.raw, /not-held|Onuma/);
+  });
+
+  test('a test name goes to the workspace host with the workspace credential, for every tool', async () => {
+    const reg = await text('register_name', { name: 'test.mcp', document: document('test.mcp', [p1]) });
+    assert.equal(reg.isError, false, reg.raw);
+    assert.ok(reg.parts[0]?.includes(`Registered at ${workspaceUrl}`), reg.raw);
+    const atCanon = await upstreamApp.inject({ method: 'GET', url: '/test.mcp/registration' });
+    assert.equal(atCanon.statusCode, 404, 'canon never heard of it');
+
+    const resolved = await text('resolve', { reference: 'test.mcp' });
+    assert.equal(resolved.isError, false, resolved.raw);
+    assert.match(resolved.raw, /"Name":"test\.mcp"/);
+    const registration = await text('check_registration', { name: 'test.mcp' });
+    assert.match(registration.raw, /"registered":true/);
+    const lint = await text('lint_profile', { name: 'test.mcp', document: document('test.mcp', [p1]) });
+    assert.equal(lint.isError, false, lint.raw);
+    const rehearsal = await text('check_publishable', { name: 'test.mcp', document: document('test.mcp', [p1]) });
+    assert.equal(rehearsal.isError, true);
+    assert.match(rehearsal.raw, /test-never-published/);
+
+    const released = await text('release_name', { name: 'test.mcp' });
+    assert.equal(released.isError, false, released.raw);
+    const gone = await instanceApp.inject({ method: 'GET', url: '/test.mcp', headers: { accept: SPEC } });
+    assert.equal(gone.statusCode, 404);
+  });
+});
+
+describe('test.* names on a workspace host (§20.3; spec §7.1; ruled 10 October 2026)', () => {
+  const contact = (title = 'A contact') => document('test.contact', [p1], title);
+
+  test('the Pointview brief\'s checklist, on the instance', async () => {
+    // Register with no allocation: succeeds, idempotently, as at canon.
+    const reg = await instanceApp.inject({ method: 'PUT', url: '/test.contact', headers: ws() });
+    assert.equal(reg.statusCode, 201, reg.body);
+    assert.deepEqual(reg.json(), { name: 'test.contact', registered: true });
+    assert.equal(reg.headers['x-cp-forwarded-to'], undefined);
+    const again = await instanceApp.inject({ method: 'PUT', url: '/test.contact', headers: ws() });
+    assert.equal(again.statusCode, 200);
+    assert.equal((again.json() as { existing: boolean }).existing, true);
+
+    const registration = await instanceApp.inject({ method: 'GET', url: '/test.contact/registration' });
+    assert.equal(registration.statusCode, 200, registration.body);
+    assert.equal(registration.headers['x-cp-surface'], 'workspace');
+    const r = registration.json() as { registered: boolean; versions: unknown[] };
+    assert.equal(r.registered, true);
+    assert.deepEqual(r.versions, []);
+
+    const empty = await instanceApp.inject({ method: 'GET', url: '/test.contact', headers: { accept: SPEC } });
+    assert.equal(empty.statusCode, 404);
+    assert.equal((empty.json() as { code: string }).code, 'workspace.test-nothing-saved');
+
+    // Save a working document, then resolve the bare name: that document, no `:unpublished`.
+    const saved = await instanceApp.inject({ method: 'PUT', url: '/test.contact:unpublished', headers: ws(), payload: contact() });
+    assert.equal(saved.statusCode, 201, saved.body);
+
+    const got = await instanceApp.inject({ method: 'GET', url: '/test.contact', headers: { accept: SPEC } });
+    assert.equal(got.statusCode, 200, got.body);
+    const doc = got.json() as { Header: Record<string, unknown>; Properties: unknown };
+    assert.equal(doc.Header['Name'], 'test.contact');
+    assert.equal(doc.Header['Title'], 'A contact');
+    assert.equal(doc.Header['Status'], 'Unpublished');
+    assert.equal(doc.Header['Version'], undefined, 'never a version');
+    assert.equal(doc.Header['Pub Date'], undefined);
+    assert.equal(got.headers['cache-control'], 'no-store');
+    assert.equal(got.headers['x-cp-status'], 'unpublished');
+    assert.equal(got.headers['x-cp-surface'], 'workspace');
+    assert.equal(got.headers['content-digest'], undefined, 'nothing that claims immutability');
+    const etag = got.headers['etag'] as string;
+    assert.ok(etag);
+
+    // A wildcard or absent Accept is a machine asking: the same document.
+    const plain = await instanceApp.inject({ method: 'GET', url: '/test.contact' });
+    assert.equal(plain.statusCode, 200);
+    assert.equal(plain.body, got.body);
+
+    // Save a change; the next resolve returns it.
+    const changed = await instanceApp.inject({ method: 'PUT', url: '/test.contact:unpublished', headers: ws(WS_TOKEN, { 'if-match': etag }), payload: contact('A contact, revised') });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const after = await instanceApp.inject({ method: 'GET', url: '/test.contact', headers: { accept: SPEC } });
+    assert.equal((after.json() as { Header: { Title: string } }).Header.Title, 'A contact, revised');
+    assert.notEqual(after.headers['etag'], etag);
+
+    // Publish: refused here, and a rehearsal too.
+    for (const url of ['/test.contact/publish', '/test.contact/publish?dry_run=true']) {
+      const publish = await instanceApp.inject({ method: 'POST', url, headers: ws(), payload: contact() });
+      assert.equal(publish.statusCode, 409, `${url}: ${publish.body}`);
+      assert.equal((publish.json() as { code: string }).code, 'workspace.test-never-published');
+    }
+
+    // A version: refused, because there are none.
+    const v1 = await instanceApp.inject({ method: 'GET', url: '/test.contact:1', headers: { accept: SPEC } });
+    assert.equal(v1.statusCode, 404);
+    assert.equal((v1.json() as { code: string }).code, 'workspace.test-has-no-versions');
+
+    // Release: succeeds, takes the form with it, and the name then 404s.
+    const release = await instanceApp.inject({ method: 'DELETE', url: '/test.contact', headers: ws() });
+    assert.equal(release.statusCode, 204, release.body);
+    const gone = await instanceApp.inject({ method: 'GET', url: '/test.contact', headers: { accept: SPEC } });
+    assert.equal(gone.statusCode, 404);
+    assert.equal((gone.json() as { registered: boolean }).registered, false, 'the Registry\'s own answer, as for any unknown name');
+    const form = await instance.pool.query(`SELECT 1 FROM workspace_profile WHERE name = 'test.contact'`);
+    assert.equal(form.rowCount, 0, 'release is the author\'s decision, so the form goes with the name');
+    const twice = await instanceApp.inject({ method: 'DELETE', url: '/test.contact', headers: ws() });
+    assert.equal(twice.statusCode, 404);
+
+    // The feed carries no test name — on either host.
+    for (const app of [instanceApp, upstreamApp]) {
+      const probe = await app.inject({ method: 'GET', url: '/distribution/journal?since=0&limit=1' });
+      const since = probe.statusCode === 416 ? (probe.json() as { earliest_seq: number }).earliest_seq : 0;
+      const journal = await app.inject({ method: 'GET', url: `/distribution/journal?since=${since}&limit=1000` });
+      assert.equal(journal.statusCode, 200);
+      assert.ok(!journal.body.includes('test.contact'), 'nothing about a test name is ever in the feed');
+    }
+  });
+
+  test('canon refuses test exactly as before', async () => {
+    const allocation = await upstreamApp.inject({ method: 'GET', url: '/test', headers: { accept: 'application/json' } });
+    assert.equal(allocation.statusCode, 404);
+    const policy = (allocation.json() as { policy: { because: string; rule: string } }).policy;
+    assert.equal(policy.because, 'spec-reserved');
+    assert.ok(policy.rule.includes('Unpublished state'), 'the rule text says Unpublished, not the old "Draft"');
+    const register = await upstreamApp.inject({ method: 'PUT', url: '/test.contact', headers: auth() });
+    assert.equal(register.statusCode, 403, register.body);
+    assert.equal((register.json() as { code: string }).code, 'authorization.prefix-spec-reserved');
+    // And the instance's allocation page is still canon's, byte for byte.
+    const mirrored = await instanceApp.inject({ method: 'GET', url: '/test', headers: { accept: 'application/json' } });
+    assert.equal(mirrored.body, allocation.body);
+  });
+
+  test('the workspace credential, and only it, acts on a test name', async () => {
+    const none = await instanceApp.inject({ method: 'PUT', url: '/test.cred' });
+    assert.equal(none.statusCode, 401);
+    const canonToken = await instanceApp.inject({ method: 'PUT', url: '/test.cred', headers: auth() });
+    assert.equal(canonToken.statusCode, 401, 'one credential per surface: a canon token is not the workspace\'s');
+    assert.equal((canonToken.json() as { code: string }).code, 'workspace.auth');
+    const release = await instanceApp.inject({ method: 'DELETE', url: '/test.cred' });
+    assert.equal(release.statusCode, 401);
+  });
+
+  test('never relayed upstream, even by a forwarder', async () => {
+    const relayed: string[] = [];
+    const spy: typeof globalThis.fetch = async (input, init) => {
+      relayed.push(`${init?.method ?? 'GET'} ${String(input)}`);
+      return new Response('{"relayed":true}', { status: 418, headers: { 'content-type': 'application/json' } });
+    };
+    const forwarder = createForwarder({ upstream: UPSTREAM, fetch: spy });
+    const workspace = createWorkspace({
+      db: instance.pool,
+      config,
+      credentials: [{ token: WS_TOKEN, label: 'anto', principal: 'anto@padi.io' }],
+      upstream: UPSTREAM,
+      onRegistryWrite: forwarder,
+    });
+    const app = Fastify();
+    await registerResolutionRoutes(app, { db: instance.pool, role: 'instance', upstream: UPSTREAM, workspace: workspace.hooks });
+    workspace.register(app);
+    registerWriteFallthrough(app, forwarder);
+    await app.ready();
+    try {
+      const steps: [string, string, unknown?][] = [
+        ['PUT', '/test.fwd'],
+        ['PUT', '/test.fwd:unpublished', document('test.fwd', [p1])],
+        ['POST', '/test.fwd/lint', document('test.fwd', [p1])],
+        ['POST', '/test.fwd/publish', document('test.fwd', [p1])],
+        ['POST', '/test.fwd/publish?dry_run=true', document('test.fwd', [p1])],
+        ['POST', '/test.fwd:1/deprecate'],
+        ['PATCH', '/test.fwd:1/header', { Owner: 'x' }],
+        ['DELETE', '/test.fwd'],
+      ];
+      for (const [method, url, payload] of steps) {
+        const r = await app.inject({ method: method as 'PUT', url, headers: ws(), ...(payload === undefined ? {} : { payload: payload as object }) });
+        assert.notEqual(r.statusCode, 418, `${method} ${url} was relayed`);
+        assert.equal(r.headers['x-cp-forwarded-to'], undefined, `${method} ${url}`);
+      }
+      assert.deepEqual(relayed, [], 'nothing about a test name reached the authoritative host');
+
+      // Everything else still relays, as before.
+      const other = await app.inject({ method: 'PUT', url: '/padi.relayed', headers: auth() });
+      assert.equal(other.statusCode, 418);
+      const publish = await app.inject({ method: 'POST', url: '/padi.relayed/publish', headers: auth(), payload: {} });
+      assert.equal(publish.statusCode, 418);
+      assert.deepEqual(relayed, [`PUT ${UPSTREAM}/padi.relayed`, `POST ${UPSTREAM}/padi.relayed/publish`]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('a host that does not admit test.* answers test names exactly as canon does', async () => {
+    const reg = await instanceApp.inject({ method: 'PUT', url: '/test.twin', headers: ws() });
+    assert.equal(reg.statusCode, 201);
+    await instanceApp.inject({ method: 'PUT', url: '/test.twin:unpublished', headers: ws(), payload: document('test.twin', [p1]) });
+
+    const workspace = createWorkspace({
+      db: instance.pool,
+      config: { orgs: [operatorOrgId], test: false },
+      credentials: [{ token: WS_TOKEN, label: 'w', principal: 'anto@padi.io' }],
+      upstream: UPSTREAM,
+    });
+    const app = Fastify();
+    await registerResolutionRoutes(app, { db: instance.pool, role: 'instance', upstream: UPSTREAM, workspace: workspace.hooks });
+    workspace.register(app);
+    registerInstanceRefusals(app, UPSTREAM);
+    await app.ready();
+    try {
+      for (const url of ['/test.twin', '/test.twin:1', '/test.twin/registration']) {
+        const here = await app.inject({ method: 'GET', url, headers: { accept: SPEC } });
+        const canon = await upstreamApp.inject({ method: 'GET', url, headers: { accept: SPEC } });
+        assert.equal(here.statusCode, canon.statusCode, url);
+        assert.equal(here.body, canon.body, url);
+      }
+      const write = await app.inject({ method: 'PUT', url: '/test.other', headers: ws() });
+      assert.equal(write.statusCode, 405, 'a write to a Registry path: §4.4\'s refusal, as for any name');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('never on the /profiles/ alias, never in the legacy shape', async () => {
+    const alias = await instanceApp.inject({ method: 'GET', url: '/profiles/test.twin' });
+    assert.equal(alias.statusCode, 404);
+    const aliasSpec = await instanceApp.inject({ method: 'GET', url: '/profiles/test.twin', headers: { accept: SPEC } });
+    assert.equal(aliasSpec.statusCode, 404);
+    const legacy = await instanceApp.inject({ method: 'GET', url: '/test.twin', headers: { accept: 'application/json' } });
+    assert.equal(legacy.statusCode, 404);
+  });
+
+  test('lint runs here, advisory, against no priors', async () => {
+    const r = await instanceApp.inject({ method: 'POST', url: '/test.twin/lint', headers: ws(), payload: document('test.twin', [p1]) });
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.headers['x-cp-surface'], 'workspace');
+    const body = r.json() as { advisory: boolean; lint: { findings: unknown[] } };
+    assert.equal(body.advisory, true);
+    assert.ok(Array.isArray(body.lint.findings));
+  });
+
+  test('the human pages: the bare name shows the document; the index lists test names, saved or not', async () => {
+    const html = await instanceApp.inject({ method: 'GET', url: '/test.twin', headers: { accept: 'text/html' } });
+    assert.equal(html.statusCode, 200);
+    assert.ok(html.body.includes('<code>cp:test.twin</code>'));
+    assert.ok(html.body.includes('never has a version'));
+    assert.ok(!html.body.includes('cp:test.twin:unpublished</code></h1>'));
+
+    await instanceApp.inject({ method: 'PUT', url: '/test.unsaved', headers: ws() });
+    const unsaved = await instanceApp.inject({ method: 'GET', url: '/test.unsaved', headers: { accept: 'text/html' } });
+    assert.equal(unsaved.statusCode, 404);
+    assert.ok(unsaved.body.includes('nothing saved yet'));
+
+    const index = await instanceApp.inject({ method: 'GET', url: '/workspace', headers: { accept: SPEC } });
+    const names = (index.json() as { test_names: { name: string; saved: boolean }[] }).test_names;
+    assert.deepEqual(
+      names.filter((n) => n.name === 'test.twin' || n.name === 'test.unsaved').map((n) => [n.name, n.saved]),
+      [['test.twin', true], ['test.unsaved', false]],
+    );
+  });
+
+  test('a test.* form with no registration under it is dark, reported, and kept', async () => {
+    await instance.pool.query(
+      `INSERT INTO workspace_profile (name, document, content_hash, updated_by) VALUES ('test.orphan', '{"Header":{"Name":"test.orphan"}}', 'h', 'test')`,
+    );
+    const read = await instanceApp.inject({ method: 'GET', url: '/test.orphan:unpublished', headers: { accept: SPEC } });
+    assert.equal(read.statusCode, 404);
+    const bare = await instanceApp.inject({ method: 'GET', url: '/test.orphan', headers: { accept: SPEC } });
+    assert.equal(bare.statusCode, 404);
+    const dark = await darkForms(instance.pool, config);
+    assert.deepEqual(dark.filter((d) => d.name === 'test.orphan').map((d) => d.reason), ['test-not-registered']);
+    await instance.pool.query(`DELETE FROM workspace_profile WHERE name = 'test.orphan'`);
+  });
+
+  test('the Registry surface is still byte-identical to canon with test names held here', async () => {
+    assertSameSurface(await machineSurface(upstreamApp), await machineSurface(instanceApp));
   });
 });

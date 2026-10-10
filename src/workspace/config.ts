@@ -4,7 +4,9 @@
  *   WORKSPACE_ORGS   comma-separated organization ids whose held names this
  *                    workspace may hold forms for (ids, not names: stable
  *                    across the §8.4 rename act)
- *   WORKSPACE_TEST   `true` to admit `test.*` forms (spec §7.1). Off unless
+ *   WORKSPACE_TEST   `true` to admit `test.*` names (spec §7.1): registered
+ *                    here, saved, resolved at the bare name to the working
+ *                    document, released — never relayed upstream. Off unless
  *                    set: the software cannot tell a private host from a
  *                    public one, so a public host serving test.* at a public
  *                    URL is a choice someone made, not a default they got.

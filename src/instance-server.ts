@@ -23,7 +23,7 @@
  *   SYNC_INTERVAL_SECONDS   default 60; 0 to sync once at start and never again
  *   RESOLUTION_PORT         default 8080
  *   WORKSPACE_ORGS          organization ids whose held names the workspace may hold
- *   WORKSPACE_TEST          `true` to admit test.* forms (spec §7.1)
+ *   WORKSPACE_TEST          `true` to admit test.* names on this host only (spec §7.1, §20.3)
  *   CP_WORKSPACE_TOKEN      the workspace credential (or CP_WORKSPACE_TOKENS as label=token,…)
  *   CP_WORKSPACE_PRINCIPAL  the person answerable for saves
  *   FORWARD_WRITES          `true` to relay writes on Profile paths to the upstream with the
@@ -129,7 +129,7 @@ if (workspaceConfig) {
     if (org.name) app.log.info(`workspace: holding forms for names held by "${org.name}" (${org.id})`);
     else app.log.warn(`workspace: organization ${org.id} is not in this instance's mirror yet; its names cannot qualify until it is`);
   }
-  if (workspaceConfig.test) app.log.info('workspace: admitting test.* forms (spec §7.1)');
+  if (workspaceConfig.test) app.log.info('workspace: test.* names live here and only here — register, save, resolve by bare name, release (spec §7.1)');
   await reportDark();
 }
 

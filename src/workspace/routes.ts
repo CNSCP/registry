@@ -6,6 +6,20 @@
  *   DELETE /<name>:unpublished   remove the form             (the workspace credential)
  *   GET    /workspace            every form this host holds  (open)
  *
+ * And, where `test.*` is admitted, the rest of a `test` name's lifecycle on
+ * this host only (§20.3, "`test.*` names on a workspace host"):
+ *
+ *   PUT    /test.<…>             register it here            (the workspace credential)
+ *   DELETE /test.<…>             release it, and its form    (the workspace credential)
+ *   GET    /test.<…>             its working document        (open)
+ *   GET    /test.<…>/registration                            (open)
+ *   POST   /test.<…>/lint        contract lint, advisory     (the workspace credential)
+ *   GET    /test.<…>:<n>, POST /test.<…>/publish, and every other act:
+ *                                refused here — a test name never has a version
+ *
+ * None of these is ever relayed upstream, even by a forwarder: canon refuses
+ * `test` everywhere, and nothing about a test name is canon's business.
+ *
  * Mounted ONLY on a host that runs a workspace beside its instance; canon
  * never mounts it and never sets the configuration that would. The Registry
  * surface on the same host is unchanged by its presence: `/<name>` and
@@ -30,6 +44,9 @@ import type { Queryable } from '../db.ts';
 import { MEDIA, etagMatches, negotiate } from '../part-three/http.ts';
 import { documentSections, enableWorkspaceNav, escape, page, splitReference, versionStrip, type UnpublishedPill, type WorkspaceHooks } from '../part-three/routes.ts';
 import { resolveName, type VersionSummary } from '../part-three/store.ts';
+import { nameProblem, tlpOf } from '../names.ts';
+import { lint, tally } from '../profile/lint.ts';
+import { parseProfileVersion } from '../profile/spec2026.ts';
 import { instanceRefusal } from '../distribution/routes.ts';
 import type { WriteHandler } from '../distribution/forward.ts';
 import { mayWriteWorkspace, signature, type WorkspaceCredential } from './credential.ts';
@@ -43,8 +60,12 @@ import {
   movedOnSince,
   presentForm,
   qualifies,
+  registerTestName,
+  releaseTestName,
   removeForm,
   saveForm,
+  testRegistration,
+  testRegistrations,
   type DarkForm,
   type Qualification,
   type WorkspaceConfig,
@@ -104,7 +125,7 @@ function refusal(
 }
 
 function qualificationRefusal(reply: FastifyReply, q: Exclude<Qualification, { ok: true }>): FastifyReply {
-  const status = q.reason === 'malformed' ? 400 : q.reason === 'not-registered' ? 404 : 403;
+  const status = q.reason === 'malformed' ? 400 : q.reason === 'not-registered' || q.reason === 'test-not-registered' ? 404 : 403;
   return refusal(reply, status, `workspace.${q.reason}`, q.detail);
 }
 
@@ -151,6 +172,56 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         return true;
       }
       reply.type(MEDIA.spec2026).send(presented.text);
+      return true;
+    },
+
+    async testName(name, version, representation, reply) {
+      // Not admitted, or not registered here: the Registry's own answer
+      // (canon's 404) stands, so a host without the setting is canon's twin.
+      if (!config.test || nameProblem(name)) return false;
+      const registration = await testRegistration(db, name);
+      if (!registration) return false;
+
+      if (version !== null) {
+        refusal(reply, 404, 'workspace.test-has-no-versions',
+          `"${name}" is a test name, which never has a version (spec §7.1): resolve it by its bare name, cp:${name}, for the working document.`,
+          { name, href: `/${name}` });
+        return true;
+      }
+
+      const form = await getForm(db, name);
+      if (!form) {
+        if (representation === 'html' && renderHtml) {
+          reply.code(404).header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
+          reply.type(MEDIA.html).send(renderTestUnsaved(name, registration.registered_at));
+          return true;
+        }
+        refusal(reply, 404, 'workspace.test-nothing-saved',
+          `"${name}" is registered on this host but nothing has been saved under it yet: PUT /${name}:unpublished with the working document and the workspace credential.`,
+          { name, registered: true });
+        return true;
+      }
+
+      mark(reply, form);
+      if (etagMatches(reply.request.headers['if-none-match'], formETag(form))) {
+        reply.code(304).send();
+        return true;
+      }
+      const presented = presentForm(form);
+      if (representation === 'html' && renderHtml) {
+        reply.type(MEDIA.html).send(renderForm(form, presented.document, { ok: true, kind: 'test' }, [], 'test', { bare: true }));
+        return true;
+      }
+      reply.type(MEDIA.spec2026).send(presented.text);
+      return true;
+    },
+
+    async testRegistration(name, reply) {
+      if (!config.test || nameProblem(name)) return false;
+      const registration = await testRegistration(db, name);
+      if (!registration) return false;
+      reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
+      reply.send({ registered: true, name, since: registration.registered_at, versions: [] });
       return true;
     },
 
@@ -206,8 +277,14 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       return credential;
     }
 
+    /** Is this a `test` name this host answers for itself? Only where admitted; otherwise it is canon's to refuse. */
+    function localTest(name: string): boolean {
+      return config.test && name.includes('.') && tlpOf(name) === 'test';
+    }
+
     app.put<{ Params: { ref: string } }>('/:ref', async (request, reply) => {
       const { name, version } = splitReference(request.params.ref);
+      if (version !== 'unpublished' && localTest(name)) return testRegister(request, reply, name, version);
       if (version !== 'unpublished') return onRegistryWrite(request, reply);
 
       const credential = authenticate(request, reply);
@@ -247,6 +324,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
     app.delete<{ Params: { ref: string } }>('/:ref', async (request, reply) => {
       const { name, version } = splitReference(request.params.ref);
+      if (version !== 'unpublished' && localTest(name)) return testRelease(request, reply, name, version);
       if (version !== 'unpublished') return onRegistryWrite(request, reply);
 
       const credential = authenticate(request, reply);
@@ -259,6 +337,84 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         return refusal(reply, 412, `workspace.${result.refused}`, result.detail, 'current' in result ? { current: result.current } : {});
       }
       return reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace').code(204).send();
+    });
+
+    // --- test.* acts, on this host only (§20.3) -----------------------------
+
+    async function testRegister(request: FastifyRequest, reply: FastifyReply, name: string, version: number | null): Promise<FastifyReply> {
+      const credential = authenticate(request, reply);
+      if (!credential) return reply;
+      if (version !== null) return noVersions(reply, name);
+      const problem = nameProblem(name);
+      if (problem) return refusal(reply, 400, `workspace.malformed`, `"${name}" is not a registrable Profile name (${problem}).`);
+
+      // No body is read, as at canon: registration claims a name and nothing
+      // else, and the working document is saved at :unpublished.
+      const { created } = await registerTestName(db, name, signature(credential));
+      reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
+      return reply.code(created ? 201 : 200).send({ name, registered: true, ...(created ? {} : { existing: true }) });
+    }
+
+    async function testRelease(request: FastifyRequest, reply: FastifyReply, name: string, version: number | null): Promise<FastifyReply> {
+      const credential = authenticate(request, reply);
+      if (!credential) return reply;
+      if (version !== null) return noVersions(reply, name);
+      if (!(await releaseTestName(db, name))) {
+        return refusal(reply, 404, 'workspace.test-not-registered', `"${name}" is not registered on this host, so there is nothing to release.`);
+      }
+      return reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace').code(204).send();
+    }
+
+    function noVersions(reply: FastifyReply, name: string): FastifyReply {
+      return refusal(reply, 404, 'workspace.test-has-no-versions',
+        `"${name}" is a test name, which never has a version (spec §7.1).`, { name, href: `/${name}` });
+    }
+
+    // Every other act on a Profile path. For a test name this host answers;
+    // for anything else it is a Registry act, refused or relayed exactly as
+    // the fallthrough would (§4.4, §20.3).
+    app.route<{ Params: { ref: string; '*': string } }>({
+      method: ['POST', 'PATCH'],
+      url: '/:ref/*',
+      handler: async (request, reply) => {
+        const { name, version } = splitReference(request.params.ref);
+        if (version === 'unpublished' || !localTest(name)) return onRegistryWrite(request, reply);
+
+        const credential = authenticate(request, reply);
+        if (!credential) return reply;
+        if (version !== null) return noVersions(reply, name);
+        if (!(await testRegistration(db, name))) {
+          return refusal(reply, 404, 'workspace.test-not-registered', `"${name}" is not registered on this host.`);
+        }
+
+        const act = request.params['*'];
+        if (request.method === 'POST' && act === 'lint') {
+          const body = request.body;
+          if (body === undefined || body === null || typeof body !== 'object') {
+            return refusal(reply, 400, 'workspace.not-a-document', 'Lint reads the candidate document: send the full 2026-shape document as the request body.');
+          }
+          let profile;
+          try {
+            profile = parseProfileVersion(body as never, name);
+          } catch (error) {
+            return refusal(reply, 422, 'workspace.lint-malformed', (error as Error).message);
+          }
+          // No priors: a test name has never published anything to be additive against.
+          const findings = lint(profile, { priors: [] });
+          reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
+          return reply.code(200).send({
+            name,
+            lint: { findings, tally: tally(findings) },
+            advisory: true,
+            message: 'Lint is advisory (§16). A test name is never published, so no finding here is ever a refusal of anything.',
+          });
+        }
+
+        return refusal(reply, 409, 'workspace.test-never-published',
+          `"${name}" is a test name: it is never published, anywhere (spec §7.1), so there is nothing to ${act === 'publish' ? 'publish — or rehearse publishing' : act}. ` +
+            'When the Profile has settled, register its real name at the authoritative host and publish it there.',
+          { name });
+      },
     });
 
     app.get(WORKSPACE_PATH, async (request, reply) => {
@@ -291,6 +447,17 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         orgs: await holders(db, config),
         test: config.test,
         forms: entries,
+        ...(config.test
+          ? {
+              test_names: (await testRegistrations(db)).map((t) => ({
+                name: t.name,
+                href: `/${t.name}`,
+                registered_at: t.registered_at,
+                registered_by: t.registered_by,
+                saved: t.saved,
+              })),
+            }
+          : {}),
         ...(operator ? { dark } : {}),
         note:
           'The unpublished forms held in the workspace on this host, as their authors saved them (§20.3). None is a version: the Registry holds no unpublished content (spec §7.3), and nothing here is in the distribution feed.',
@@ -316,7 +483,10 @@ function renderForm(
   q: Qualification,
   versions: VersionSummary[],
   note: string | null,
+  options: { bare?: boolean } = {},
 ): string {
+  const bare = options.bare === true;
+  const cited = bare ? `cp:${form.name}` : `cp:${form.name}:unpublished`;
   const saved = `${escape(form.updated_at.toISOString().replace('T', ' ').slice(0, 16))} UTC by ${escape(form.updated_by)}`;
   const standing =
     note === null || note === 'test'
@@ -325,22 +495,41 @@ function renderForm(
         ? `<p>Its contract fields are the same as ${escape(note.slice('same as '.length))}'s: nothing has changed since that publication.</p>`
         : `<p>It has moved on since ${escape(note.slice('moved on since '.length))}: what is here is not what is published.</p>`;
 
+  const raw = bare
+    ? `<div class="raw"><strong>The working document is the answer, not this page.</strong>
+       <code>GET /${escape(form.name)}</code>
+       with <code>Accept: application/cp+json; profile=2026</code>.
+       ETag <code>${escape(form.content_hash)}</code>. It is served <code>no-store</code> and changes with every save:
+       a test name never has a version, and this host is the only place it resolves (spec §7.1).</div>`
+    : `<div class="raw"><strong>The form is the document, not this page.</strong>
+       <code>GET /${escape(form.name)}:unpublished</code>
+       with <code>Accept: application/cp+json; profile=2026</code>.
+       ETag <code>${escape(form.content_hash)}</code>. It is served <code>no-store</code> and is never selected by
+       <code>cp:${escape(form.name)}</code>: only a published version is (spec §8.6).</div>`;
+
   return page(
-    `${form.name}:unpublished`,
-    `<h1><code>cp:${escape(form.name)}:unpublished</code></h1>
+    bare ? form.name : `${form.name}:unpublished`,
+    `<h1><code>${escape(cited)}</code></h1>
      <p>Status: <strong>Unpublished</strong></p>
-     ${versionStrip(form.name, versions, 'unpublished', { href: `/${form.name}:unpublished`, note })}
+     ${versionStrip(form.name, versions, 'unpublished', { href: bare ? `/${form.name}` : `/${form.name}:unpublished`, note })}
      <div class="callout unpublished"><strong>This is the working copy, not a contract.</strong>
        It is ${whereHeld(q)} — not by the Registry, which never holds unpublished content (spec §7.3).
        It may change at any time, and a Connection bound against it is provisional (spec §6.3).
        Last saved ${saved}.</div>
      ${standing}
      ${documentSections(document as Parameters<typeof documentSections>[0])}
-     <div class="raw"><strong>The form is the document, not this page.</strong>
-       <code>GET /${escape(form.name)}:unpublished</code>
-       with <code>Accept: application/cp+json; profile=2026</code>.
-       ETag <code>${escape(form.content_hash)}</code>. It is served <code>no-store</code> and is never selected by
-       <code>cp:${escape(form.name)}</code>: only a published version is (spec §8.6).</div>`,
+     ${raw}`,
+  );
+}
+
+function renderTestUnsaved(name: string, registeredAt: Date): string {
+  return page(
+    name,
+    `<h1><code>cp:${escape(name)}</code></h1>
+     <p>Status: <strong>Unpublished</strong> · registered on this host ${escape(registeredAt.toISOString().slice(0, 10))}</p>
+     <div class="callout unpublished"><strong>Registered here; nothing saved yet.</strong>
+       ${whereHeld({ ok: true, kind: 'test' })}. Save the working document with
+       <code>PUT /${escape(name)}:unpublished</code> and the workspace credential, and this name resolves to it.</div>`,
   );
 }
 

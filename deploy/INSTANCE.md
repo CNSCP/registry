@@ -84,7 +84,7 @@ enters the distribution feed.
 ```sh
 npm run migrate:workspace up          # the workspace's own table, in its own migration set
 export WORKSPACE_ORGS=<organization id>   # see below; comma-separate several
-export WORKSPACE_TEST=true                # admit test.* forms — set this on a PRIVATE host; leave it off in public
+export WORKSPACE_TEST=true                # admit test.* names — set this on a PRIVATE host; leave it off in public
 export CP_WORKSPACE_TOKEN=$(openssl rand -base64 36)   # 32+ characters; or CP_WORKSPACE_TOKENS=anto=…,assistant=…
 export CP_WORKSPACE_PRINCIPAL=you@example.com
 npm run instance
@@ -128,6 +128,34 @@ A name you registered a moment ago is not in this mirror until the next sync. Th
 catches up for itself before refusing a save as `not-registered`, so register-then-save works
 straight away; it does not do this for any other refusal, because no other one here can be
 invented by a stale mirror.
+
+### `test.*` names: the whole lifecycle, on this host only
+
+With `WORKSPACE_TEST=true`, a name under `test` lives here and nowhere else (spec §7.1;
+design §20.3). You register it here, save its working document as often as you like, and
+anything on your network resolves it by its plain name, `test.contact`, to the current
+document. It never has a version, it is never published, and nothing about it is ever relayed
+to `cp.cnscp.io` — even with `FORWARD_WRITES` on — or carried in the feed. Every step takes the
+**workspace** credential; a canon token is refused.
+
+```sh
+W="Authorization: Bearer $CP_WORKSPACE_TOKEN"
+curl -X PUT  http://127.0.0.1:8080/test.contact -H "$W"                        # register: 201
+curl -X PUT  http://127.0.0.1:8080/test.contact:unpublished -H "$W" \
+     -H 'Content-Type: application/json' --data @test.contact.json             # save the working document
+curl         http://127.0.0.1:8080/test.contact                                 # anyone: the document itself
+curl -X POST http://127.0.0.1:8080/test.contact/lint -H "$W" \
+     -H 'Content-Type: application/json' --data @test.contact.json             # advisory lint, run here
+curl -X DELETE http://127.0.0.1:8080/test.contact -H "$W"                      # release: the name and its document
+```
+
+`test.contact:1` is refused (`workspace.test-has-no-versions`), and so is
+`POST /test.contact/publish` (`workspace.test-never-published`). A registered name with
+nothing saved answers `404 workspace.test-nothing-saved`. `/workspace` lists your `test`
+names under `test_names`, saved or not. On a host without `WORKSPACE_TEST`, every `test` URL
+answers exactly as `cp.cnscp.io` does. The MCP tools send `test.*` names to
+`CP_WORKSPACE_URL` with `CP_WORKSPACE_TOKEN` automatically. When a Profile has settled,
+register its real name at canon, save it there with `Header.Name` changed, and publish.
 
 ## Forwarding: one URL for your tools (design §20.3)
 

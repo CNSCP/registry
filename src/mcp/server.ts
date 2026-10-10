@@ -111,6 +111,36 @@ async function call(
   return result(await request(BASE, TOKEN, method, path, body, accept));
 }
 
+/**
+ * Where an act on this name goes, and with which credential. A `test.*` name
+ * lives on the workspace host and nowhere else (§20.3; spec §7.1): its
+ * registration, release, resolution and lint are the workspace's, under the
+ * workspace credential, and never reach the Registry. Every other name is a
+ * Registry act with the Registry token. The server keeps one credential per
+ * surface; this is the client choosing the surface by the name.
+ */
+function isTestName(name: string): boolean {
+  return name.split(':')[0]!.split('.')[0] === 'test' && name.includes('.');
+}
+
+async function callFor(
+  name: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  accept = 'application/cp+json; profile=2026',
+): Promise<CallResult> {
+  if (!isTestName(name)) return call(method, path, body, accept);
+  const token = method === 'GET' ? '' : WORKSPACE_TOKEN;
+  if (method !== 'GET' && !token) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: `"${name}" is a test name, which lives on the workspace host (§20.3) and is acted on with the workspace credential; CP_WORKSPACE_TOKEN is not set.` }],
+    };
+  }
+  return result(await request(WORKSPACE_BASE, token, method, path, body, accept));
+}
+
 const server = new McpServer({ name: 'cp-registry', version: '0.1.0' });
 
 // --- Reading (the resolution profile — safe, no scopes involved) ------------
@@ -123,10 +153,12 @@ server.registerTool(
       'GET a reference from the Registry. A dotted name returns its published versions; ' +
       '`name:2` returns that immutable version; a single dotless segment returns the allocation ' +
       'page listing everything beneath that Prefix. `name:unpublished` is never resolved by the ' +
-      'Registry (spec §7.2): unpublished content lives with its author.',
+      'Registry (spec §7.2): unpublished content lives with its author. A `test.*` name resolves ' +
+      'only on a workspace host that admits it, and there its bare name returns the current working ' +
+      'document — never a version (spec §7.1, design §20.3).',
     inputSchema: { reference: z.string().describe('e.g. "acme.meter.flow", "acme.meter.flow:2", or "acme"') },
   },
-  async ({ reference }) => call('GET', `/${reference}`),
+  async ({ reference }) => callFor(reference, 'GET', `/${reference}`),
 );
 
 server.registerTool(
@@ -138,7 +170,7 @@ server.registerTool(
       'registered but never published can be seen for what it is.',
     inputSchema: { name: z.string() },
   },
-  async ({ name }) => call('GET', `/${name}/registration`),
+  async ({ name }) => callFor(name, 'GET', `/${name}/registration`),
 );
 
 // --- Registration and the working document ----------------------------------
@@ -157,7 +189,8 @@ server.registerTool(
       'name is claimed: two calls to two surfaces with two credentials, in order, never one act. ' +
       'If the registration succeeds and the save does not, the name is still registered and the ' +
       'refusal is reported — nothing is rolled back, because a registration is a public act that ' +
-      'happened.',
+      'happened. A `test.*` name is registered on the workspace host only, with the workspace ' +
+      'credential — never at the Registry, which refuses `test` everywhere (spec §7.1).',
     inputSchema: {
       name: z.string().describe('Two or more lowercase segments, e.g. "padi.meter.flow"'),
       document: z
@@ -167,13 +200,14 @@ server.registerTool(
     },
   },
   async ({ name, document }) => {
-    const registered = await call('PUT', `/${name}`);
+    const registered = await callFor(name, 'PUT', `/${name}`);
     if (document === undefined || registered.isError) return registered;
     const saved = await saveForm(name, document);
+    const where = isTestName(name) ? WORKSPACE_BASE : BASE;
     return {
       ...(saved.isError ? { isError: true } : {}),
       content: [
-        { type: 'text', text: `Registered at ${BASE}:\n${registered.content[0]?.text ?? ''}` },
+        { type: 'text', text: `Registered at ${where}:\n${registered.content[0]?.text ?? ''}` },
         { type: 'text', text: `Saved to the workspace at ${WORKSPACE_BASE}:\n${saved.content[0]?.text ?? ''}` },
       ],
     };
@@ -250,7 +284,7 @@ server.registerTool(
       'publication and creates no version: the form is mutable without restriction, can be ' +
       'reshaped as often as the work requires, and only `publish` ever makes a contract (spec ' +
       '§6.3). Held only for a name registered under a Prefix the workspace\'s organization holds, ' +
-      'or under `test.*` where the host admits it; Header.Name must equal the name; Version, Status ' +
+      'or under `test.*` where the host admits it and the name is registered there; Header.Name must equal the name; Version, Status ' +
       'and Pub Date are dropped, because the Registry assigns those at publication. ' +
       'OVER AN EXISTING FORM `if_match` IS REQUIRED: call get_unpublished, edit what it returns, ' +
       'and pass the ETag it gave you. Without it the workspace answers 428, and with a stale one ' +
@@ -290,7 +324,7 @@ server.registerTool(
       document: z.record(z.string(), z.unknown()).describe('The full document to lint'),
     },
   },
-  async ({ name, document }) => call('POST', `/${name}/lint`, document),
+  async ({ name, document }) => callFor(name, 'POST', `/${name}/lint`, document),
 );
 
 server.registerTool(
@@ -311,7 +345,7 @@ server.registerTool(
       document: z.record(z.string(), z.unknown()).describe('The full document to rehearse'),
     },
   },
-  async ({ name, document }) => call('POST', `/${name}/publish?dry_run=true`, document),
+  async ({ name, document }) => callFor(name, 'POST', `/${name}/publish?dry_run=true`, document),
 );
 
 // --- The irreversible act -----------------------------------------------------
@@ -331,7 +365,7 @@ server.registerTool(
       document: z.record(z.string(), z.unknown()).describe('The full document to publish'),
     },
   },
-  async ({ name, document }) => call('POST', `/${name}/publish`, document),
+  async ({ name, document }) => callFor(name, 'POST', `/${name}/publish`, document),
 );
 
 server.registerTool(
@@ -419,10 +453,11 @@ server.registerTool(
     description:
       'Gives up the registration. Available only while no version has ever been published — "a name ' +
       'with no published versions MAY be released by its owner" (spec §7.3); a name with published ' +
-      'versions is permanent, and the Registry refuses with a structured 409.',
+      'versions is permanent, and the Registry refuses with a structured 409. Releasing a `test.*` ' +
+      'name on the workspace host removes its working document with it.',
     inputSchema: { name: z.string() },
   },
-  async ({ name }) => call('DELETE', `/${name}`),
+  async ({ name }) => callFor(name, 'DELETE', `/${name}`),
 );
 
 await server.connect(new StdioServerTransport());

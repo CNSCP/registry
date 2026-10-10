@@ -20,7 +20,9 @@
  *     read and write, so a released or transferred name goes dark at once;
  *   - a `test.*` name, "for local exercise, never globally resolvable" (spec
  *     §7.1), which no organization holds and no mirror row vouches for —
- *     admitted only when the operator says so.
+ *     admitted only when the operator says so, and only once it is
+ *     registered HERE (`workspace_test_name`): the same order as any name —
+ *     register, then work — with the registration local to this host.
  */
 
 import type { Queryable } from '../db.ts';
@@ -49,7 +51,7 @@ export type WorkspaceForm = {
 export type Qualification =
   | { ok: true; kind: 'held'; org: { id: string; name: string } }
   | { ok: true; kind: 'test' }
-  | { ok: false; reason: 'malformed' | 'not-registered' | 'not-held' | 'test-not-admitted'; detail: string };
+  | { ok: false; reason: 'malformed' | 'not-registered' | 'not-held' | 'test-not-admitted' | 'test-not-registered'; detail: string };
 
 /**
  * May this workspace hold a form under this name? Answered from the mirror,
@@ -61,13 +63,21 @@ export async function qualifies(db: Queryable, config: WorkspaceConfig, name: st
   if (problem) return { ok: false, reason: 'malformed', detail: `not a well-formed Profile name (${problem})` };
 
   if (tlpOf(name) === 'test') {
-    return config.test
-      ? { ok: true, kind: 'test' }
-      : {
-          ok: false,
-          reason: 'test-not-admitted',
-          detail: 'This workspace does not admit test.* forms (spec §7.1); set WORKSPACE_TEST=true to admit them.',
-        };
+    if (!config.test) {
+      return {
+        ok: false,
+        reason: 'test-not-admitted',
+        detail: 'This workspace does not admit test.* names (spec §7.1); set WORKSPACE_TEST=true to admit them.',
+      };
+    }
+    if (!(await testRegistration(db, name))) {
+      return {
+        ok: false,
+        reason: 'test-not-registered',
+        detail: `"${name}" is not registered on this host. Register it first — PUT /${name} with the workspace credential — as you would any name; under test the registration is this host's alone (spec §7.1).`,
+      };
+    }
+    return { ok: true, kind: 'test' };
   }
 
   const { rows } = await db.query<{ org_id: string; holder: string }>(
@@ -94,6 +104,67 @@ export async function qualifies(db: Queryable, config: WorkspaceConfig, name: st
     };
   }
   return { ok: true, kind: 'held', org: { id: row.org_id, name: row.holder } };
+}
+
+// --- test.* registrations (design §20.3; spec §7.1) ---------------------------
+//
+// Local to this host, in the workspace's own table: never allocated, never in
+// the mirror, never relayed, never in the feed. Two hosts may each register
+// `test.contact` and mean different things by it, which is what "never
+// globally resolvable" means in practice.
+
+export type TestRegistration = { name: string; registered_at: Date; registered_by: string };
+
+export async function testRegistration(db: Queryable, name: string): Promise<TestRegistration | null> {
+  const { rows } = await db.query<TestRegistration>(
+    `SELECT name, registered_at, registered_by FROM workspace_test_name WHERE name = $1`,
+    [name],
+  );
+  return rows[0] ?? null;
+}
+
+/** Every `test.*` name registered here, with whether a form has been saved under it. */
+export async function testRegistrations(db: Queryable): Promise<(TestRegistration & { saved: boolean })[]> {
+  const { rows } = await db.query<TestRegistration & { saved: boolean }>(
+    `SELECT t.name, t.registered_at, t.registered_by, (w.name IS NOT NULL) AS saved
+       FROM workspace_test_name t LEFT JOIN workspace_profile w ON w.name = t.name
+      ORDER BY t.name`,
+  );
+  return rows;
+}
+
+/** Register a `test.*` name here. Idempotent, as registration is at canon: a second call is a no-op. */
+export async function registerTestName(
+  db: Queryable,
+  name: string,
+  by: string,
+): Promise<{ created: boolean; registration: TestRegistration }> {
+  const { rows } = await db.query<TestRegistration>(
+    `INSERT INTO workspace_test_name (name, registered_by) VALUES ($1, $2)
+     ON CONFLICT (name) DO NOTHING
+     RETURNING name, registered_at, registered_by`,
+    [name, by],
+  );
+  if (rows[0]) return { created: true, registration: rows[0] };
+  return { created: false, registration: (await testRegistration(db, name))! };
+}
+
+/**
+ * Release a `test.*` name: the registration AND its form, in one statement.
+ *
+ * The 25 September ruling says a host never deletes a draft for a reason that
+ * was nobody's decision about it — a configuration edit, a transfer. A release
+ * is the author's own decision, made with the workspace credential, so the
+ * form goes with the name (ruled 10 October 2026). Returns false if the name
+ * was not registered here.
+ */
+export async function releaseTestName(db: Queryable, name: string): Promise<boolean> {
+  const { rows } = await db.query<{ name: string }>(
+    `WITH form AS (DELETE FROM workspace_profile WHERE name = $1)
+     DELETE FROM workspace_test_name WHERE name = $1 RETURNING name`,
+    [name],
+  );
+  return rows.length > 0;
 }
 
 export async function getForm(db: Queryable, name: string): Promise<WorkspaceForm | null> {
@@ -306,7 +377,8 @@ export type DarkForm = {
  *
  * A form is DARK when its name stopped qualifying: the name was released, its
  * Prefix moved to another organization, the operator removed an organization
- * from this host's configuration, or `test.*` forms are no longer admitted.
+ * from this host's configuration, or `test.*` forms are no longer admitted
+ * (or, rarely, a `test.*` form has no registration under it).
  * `qualifies()` is consulted on every read and every write, so a dark form is
  * already unreachable — nothing serves it, nothing lists it openly, and a save
  * under that name is refused.

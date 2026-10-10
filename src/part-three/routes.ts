@@ -91,6 +91,19 @@ export type WorkspaceHooks = {
    * representation: the 2022 shape has no Unpublished status to carry.
    */
   unpublished(name: string, representation: Representation, reply: FastifyReply): Promise<boolean>;
+  /**
+   * `GET /test.<…>` and `GET /test.<…>:<n>` on a host whose workspace admits
+   * `test.*` (§20.3, "`test.*` names on a workspace host"). A registered
+   * `test` name resolves at its bare name to its working document; it never
+   * has a version. Sends the answer and returns true, or returns false to
+   * leave the Registry's own answer — canon's — in place: for a host that
+   * does not admit `test.*`, and for a name not registered here. Never called
+   * for `:unpublished` (that is `unpublished` above), for the legacy
+   * representation, or on the `/profiles/` alias.
+   */
+  testName?(name: string, version: number | null, representation: Representation, reply: FastifyReply): Promise<boolean>;
+  /** `GET /test.<…>/registration` on such a host: the local registration, or false for the Registry's 404. */
+  testRegistration?(name: string, reply: FastifyReply): Promise<boolean>;
   /** Which of these names this host holds a form for, with the pill's note. */
   held(names: string[]): Promise<Map<string, UnpublishedPill>>;
   /** For `/health` and `/distribution/status`: the host's second hat, visible. */
@@ -325,6 +338,10 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
     const { name } = splitReference(request.params.ref);
     if (nameProblem(name)) return reply.code(400).send({ error: 'not a well-formed Profile name' });
 
+    if (workspace?.testRegistration && tlpOf(name) === 'test' && (await workspace.testRegistration(name, reply))) {
+      return reply;
+    }
+
     const registered = await resolveName(db, name);
     if (!registered) return reply.code(404).send({ registered: false, name });
 
@@ -371,6 +388,23 @@ export async function registerResolutionRoutes(app: FastifyInstance, deps: Resol
       });
     }
     if (problem) return reply.code(400).send({ error: `not a well-formed Profile name (${problem})` });
+
+    // A `test` name on a host whose workspace admits them (§20.3): the
+    // workspace answers the bare name with the working document, and refuses
+    // every version, because there are none. Nothing under `test` is in this
+    // host's mirror, so the Registry surface could only ever say 404 here —
+    // the two surfaces still never both answer one URL. Never on the
+    // `/profiles/` alias, never in the legacy shape.
+    if (
+      workspace?.testName &&
+      fallback !== 'legacy' &&
+      representation !== 'legacy' &&
+      version !== 'unpublished' &&
+      tlpOf(name) === 'test' &&
+      (await workspace.testName(name, version, representation, reply))
+    ) {
+      return reply;
+    }
 
     if (version === 'unpublished') {
       // A host that runs a workspace beside its instance (§20.3) answers here

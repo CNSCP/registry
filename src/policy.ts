@@ -30,7 +30,7 @@ export const SPEC_RESERVED: readonly ReservedRule[] = [
   {
     tlp: 'test',
     rule:
-      'Local exercise; never globally resolvable. Unrelated to the Draft state — `test` is a place in the namespace, Draft is a stage in a Profile lifecycle.',
+      'Local exercise; never globally resolvable. Unrelated to the Unpublished state — `test` is a place in the namespace, Unpublished is a stage in the lifecycle of every Profile.',
   },
 ] as const;
 

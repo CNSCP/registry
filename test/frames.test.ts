@@ -101,6 +101,10 @@ before(async () => {
   registerInstanceRefusals(instanceApp, UPSTREAM);
   await instanceApp.ready();
 
+  // A test name is registered on this host before anything is saved under it (§20.3).
+  const registered = await instanceApp.inject({ method: 'PUT', url: '/test.frames.demo', headers: { authorization: `Bearer ${WS_TOKEN}` } });
+  assert.equal(registered.statusCode, 201, registered.body);
+
   const put = await instanceApp.inject({
     method: 'PUT',
     url: '/test.frames.demo:unpublished',
