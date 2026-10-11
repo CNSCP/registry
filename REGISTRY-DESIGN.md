@@ -1217,7 +1217,7 @@ Only a Profile path is relayed — a first path segment containing a dot, §4.4'
 
 *Share.* Every form on `/workspace`, and every Unpublished page, carries Share. It offers two things:
 
-- **The link.** The form's own address: `https://<host>/<name>:unpublished`, or `https://<host>/test.<…>` for a `test` name. A line under it says the link works for whoever can reach this host. The software cannot tell a private host from a public one, so it says so rather than guessing.
+- **The link.** The form's own address: `https://<host>/<name>:unpublished`, or `https://<host>/test.<…>` for a `test` name. Clicking it copies it, because what a partner needs is the URL to paste into Import, not the page. A line under it says the link works for whoever can reach this host. The software cannot tell a private host from a public one, so it says so rather than guessing.
 - **The file.** `GET /workspace/share/<name>`, downloaded as `<name>.cp.json`: a *carrier* (below).
 
 Share is a read. Like every read it needs no credential, changes nothing and records nothing. It is shown to every viewer, because the page it sits on is already open to every viewer. A registered `test` name with nothing saved has nothing to share, so it shows no Share.
@@ -1235,7 +1235,7 @@ Import also accepts a bare 2026 document, the way authors keep working copies on
 
 A carrier never holds a published version (versions travel with their chain), a dark form, a credential, or anything that depends on who it is for. The same Share gives every recipient the same file.
 
-*Import.* `/workspace` carries an **Import** pill at the top. It opens a panel where the receiver pastes a link or chooses a file, then sees a preview, then imports. The panel asks for the host's workspace credential, keeps it in the page's memory only, and sends it as `Authorization: Bearer` to `POST /workspace/import`. An instance has no sessions or cookies by design. This panel is the one script on any page this design renders; Share and everything else stay plain links and forms.
+*Import.* `/workspace` carries an **Import** pill at the top. It opens a panel where the receiver pastes a link or chooses a file, then sees a preview, then imports. The panel asks for the host's workspace credential, keeps it in the page's memory only, and sends it as `Authorization: Bearer` to `POST /workspace/import`. An instance has no sessions or cookies by design. This panel, and the few lines that copy a Share link when it is clicked, are the only scripts on any page this design renders. Without them the link is still a link and the field can be selected by hand.
 
 `POST /workspace/import` takes a carrier, a bare document, or `{ "link": … }`. It previews unless asked to apply (`"apply": true`) and answers one row per item. The outcomes are:
 

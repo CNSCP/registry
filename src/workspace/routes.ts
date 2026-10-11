@@ -560,6 +560,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
           updated_at: form.updated_at,
           updated_by: form.updated_by,
           share: `/workspace/share/${form.name}`,
+          link: shareLink(request, form.name),
           ...(moved ? { published: moved } : {}),
           ...(form.kind === 'shared'
             ? {
@@ -671,14 +672,39 @@ const SHARE_STYLE = `<style>
   .verified{color:#1b7f3a}.stated{color:#9a6700}
 </style>`;
 
-/** Share, without a script: the link to select and copy, and the file to download (§20.3, "Sharing a form"). */
+/**
+ * Copy a Share link to the clipboard when it is clicked, rather than follow
+ * it: the partner's Import wants the URL, not the page. Without the script
+ * the link still works as a link and the field can be selected by hand.
+ */
+const COPY_SCRIPT = `<script>(function () {
+  document.addEventListener('click', function (event) {
+    var target = event.target.closest('[data-copy]');
+    if (!target) return;
+    event.preventDefault();
+    var text = target.getAttribute('data-copy');
+    function done() { var was = target.textContent; target.textContent = 'Copied'; setTimeout(function () { target.textContent = was; }, 1500); }
+    function fallback() {
+      var field = document.createElement('textarea');
+      field.value = text; field.setAttribute('readonly', ''); field.style.position = 'absolute'; field.style.left = '-9999px';
+      document.body.appendChild(field); field.select();
+      try { document.execCommand('copy'); done(); } catch (e) { window.prompt('Copy this link:', text); }
+      document.body.removeChild(field);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  });
+})();</script>`;
+
+/** Share: the link to copy, and the file to download (§20.3, "Sharing a form"). */
 function shareBlock(name: string, link: string): string {
   return `${SHARE_STYLE}<details class="share"><summary>Share</summary>
     <p><strong>Link.</strong> Works for whoever can reach this host; it always gives the form as last saved here.
-      <input type="text" readonly value="${escape(link)}" aria-label="Share link"></p>
+      Paste it into <em>Import</em> on the partner's workspace.
+      <input type="text" readonly value="${escape(link)}" aria-label="Share link">
+      <a href="${escape(link)}" data-copy="${escape(link)}" class="pill">Copy link</a></p>
     <p><strong>File.</strong> <a href="/workspace/share/${escape(name)}" download="${escape(name)}.cp.json">Download ${escape(name)}.cp.json</a>
       — a snapshot, for a partner who cannot reach this host. They take either in with <em>Import</em> on their own workspace.</p>
-  </details>`;
+  </details>${COPY_SCRIPT}`;
 }
 
 /** The banner a shared copy wears instead of the author's (§20.3). */
@@ -717,6 +743,7 @@ function renderIndex(body: {
     href: string;
     held_as: string;
     share: string;
+    link: string;
     updated_at: Date;
     updated_by: string;
     published?: { version: number; same: boolean };
@@ -738,7 +765,7 @@ function renderIndex(body: {
          <td>${standing}</td>
          <td>${escape(f.updated_at.toISOString().slice(0, 10))}</td>
          <td>${escape(f.updated_by)}</td>
-         <td><a href="${escape(f.href)}">link</a> · <a href="${escape(f.share)}" download="${escape(f.name)}.cp.json">file</a></td></tr>`;
+         <td><a href="${escape(f.link)}" data-copy="${escape(f.link)}" title="Copy the Share link">copy link</a> · <a href="${escape(f.share)}" download="${escape(f.name)}.cp.json">file</a></td></tr>`;
     })
     .join('');
   const serves = body.orgs.map((o) => `<strong>${escape(o.name ?? o.id)}</strong>`).join(', ');
@@ -747,7 +774,7 @@ function renderIndex(body: {
     'Workspace — unpublished forms on this host',
     `${SHARE_STYLE}<h1>Workspace</h1>
      <p class="versions"><a class="pill import" href="#import" onclick="document.getElementById('import').open=true">Import</a></p>
-     ${importPanel()}
+     ${importPanel()}${COPY_SCRIPT}
      <p class="section-intro">The unpublished forms held on this host — the working copies
        behind the names ${serves || 'no organization'} holds${body.test ? ', <code>test.*</code> forms for local exercise' : ''},
        and copies others have shared here. None is a version, and nothing here is in the distribution feed (§20.3).</p>

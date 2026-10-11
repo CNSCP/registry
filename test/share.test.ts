@@ -239,13 +239,14 @@ describe('Share (§20.3, "Sharing a form")', () => {
     assert.equal(elsewhere.statusCode, 404, 'the partner holds nothing yet');
   });
 
-  test('the page offers the link and the file, without a script', async () => {
+  test('the page offers the link to copy and the file to download', async () => {
     const r = await authorApp.inject({ method: 'GET', url: '/padi.share:unpublished', headers: { accept: 'text/html' } });
     assert.equal(r.statusCode, 200);
     assert.match(r.body, /<details class="share"><summary>Share<\/summary>/);
     assert.ok(r.body.includes(`value="${AUTHOR}/padi.share:unpublished"`), 'the link is the form\'s own address on this host');
     assert.ok(r.body.includes('href="/workspace/share/padi.share"'));
-    assert.ok(!r.body.includes('<script'), 'Share needs no script');
+    assert.ok(r.body.includes(`data-copy="${AUTHOR}/padi.share:unpublished"`), 'clicking the link copies it, for the partner\'s Import');
+    assert.ok(r.body.includes(`href="${AUTHOR}/padi.share:unpublished"`), 'and without a script it is still the link');
   });
 });
 
@@ -506,6 +507,7 @@ describe('own work, re-sharing, and the wall (§20.3)', () => {
     assert.match(page.body, /action="\/workspace\/import"/);
     assert.match(page.body, /shared copy · Padi, Inc\./);
     assert.ok(page.body.includes('href="/workspace/share/padi.share"'));
+    assert.ok(page.body.includes(`data-copy="${PARTNER}/padi.share:unpublished"`), 'each row copies its Share link');
     const json = (await partnerApp.inject({ method: 'GET', url: '/workspace' })).json() as { forms: { name: string; held_as: string; shared?: { from: string; verified: boolean } }[] };
     const entry = json.forms.find((f) => f.name === 'padi.share.link')!;
     assert.equal(entry.held_as, 'shared copy');
