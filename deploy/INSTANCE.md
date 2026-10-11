@@ -157,6 +157,48 @@ answers exactly as `cp.cnscp.io` does. The MCP tools send `test.*` names to
 `CP_WORKSPACE_URL` with `CP_WORKSPACE_TOKEN` automatically. When a Profile has settled,
 register its real name at canon, save it there with `Header.Name` changed, and publish.
 
+## Sharing with partners (design §20.3, "Sharing a form")
+
+Any form in your workspace can be shared, and any workspace can take a shared form in.
+
+**To share.** Open the form's page and use **Share**:
+
+- **The link** is the form's own address, such as `https://cp.padi.io/padi.foo:unpublished` or `https://cp.padi.io/test.foo`. It works for whoever can reach your host, and always gives the form as last saved.
+- **The file** is `<name>.cp.json`, a snapshot. Use it when the partner cannot reach your host, for example inside a disconnected Realm. `/workspace` offers both on every row.
+
+**To import.** On `/workspace`, use the **Import** pill at the top. Paste a link or choose a file, enter this host's workspace credential, then **Preview** and **Import**.
+
+What lands depends on whose name it is:
+
+- **A name your organization holds** (`WORKSPACE_ORGS`): your own work, editable as usual.
+- **Anyone else's registered name, or a `test` name:** a **shared copy**. It is read-only here (a `PUT` answers `409`), served at the usual addresses with `x-cp-shared-from`, and replaced only by a later import after the same preview.
+
+A few rules hold everywhere:
+
+- **Your own form is never overwritten** by someone else's.
+- **A form that differs is replaced only if you tick Replace** in the preview.
+- **A copy imported by link** offers **Check for update** on its page.
+
+```bash
+# the same from a terminal (CP_WORKSPACE_URL defaults to http://localhost:8080):
+npm run workspace -- share padi.foo --out padi.foo.cp.json
+CP_WORKSPACE_TOKEN=… npm run workspace -- import padi.foo.cp.json            # preview
+CP_WORKSPACE_TOKEN=… npm run workspace -- import padi.foo.cp.json --apply    # import
+CP_WORKSPACE_TOKEN=… npm run workspace -- import https://cp.padi.io/padi.foo:unpublished --apply --replace
+```
+
+**Links are fetched by this host, over HTTPS only,** so the copy can say its origin is verified. A file's origin is only "as stated". Two settings apply:
+
+- `PUBLIC_URL=https://cp.padi.io` names your host correctly in links and files behind a proxy.
+- `WORKSPACE_IMPORT_HTTP=true` admits plain-HTTP links between two hosts on a developer's machine. Never set it on a public host.
+
+**Run `npm run migrate:workspace` after upgrading:** sharing adds a third workspace migration.
+
+**On a disconnected host, a file is the only road in,** and it still needs something to land on:
+
+- **`test` names** need a host that boots with no upstream, which is not yet built.
+- **Real names** need the mirror to show the registration.
+
 ## Forwarding: one URL for your tools (design §20.3)
 
 By default a write to a Registry path gets `405` and the authoritative host's URL — your tools

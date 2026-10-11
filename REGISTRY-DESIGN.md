@@ -1,6 +1,6 @@
 # Connection Profile Registry — System Design
 
-**Status:** Draft v0.24 · 10 October 2026
+**Status:** Draft v0.25 · 11 October 2026
 **Normative anchor:** the CNS/CP specification, **2026 revision**, **published 16 September 2026** at [github.com/CNSCP/specification](https://github.com/CNSCP/specification) — §1–§10 with Appendices A–C, editors Toby Considine and Anto Budiardjo. Where this document and the specification differ, the specification wins and this document is wrong.
 
 > **The anchor is pinned, and now anyone can check the pin.** This design is written against one identifiable artifact:
@@ -24,6 +24,8 @@
 **Reference convention:** *spec §7.3* cites the CNS/CP specification. A bare *§12* cites a section of this document.
 
 > **On this revision.** v0.3 was a single flow. v0.4 divided the work into the three parts it naturally has — allocation, authoring, and resolution — because they differ in who runs them, who uses them, how fast they change, and whether the specification constrains them at all. §4 defines the parts and the seams between them; §24 records what changed from v0.2 when the 2026 specification landed.
+>
+> **v0.25 adds sharing (11 October).** §20.3: Share gives a form's link or a carrier file (`GET /workspace/share/<name>`). Import, on any workspace, takes either in (`POST /workspace/import`, previewed first) as a **shared copy**: pinned to the hash it arrived with, marked with its origin (verified when the host fetched it, as stated when it came in a file), never editable here, and never a version. A host's own name imported is an ordinary save. The 25 September rule holds: nothing is deleted automatically. New §25 Q15 (signed carriers). Rulings given 11 October 2026 (`share-plan.md`).
 >
 > **v0.24 gives `test.*` a local lifecycle on a workspace host (10 October).** §20.3: register, save, resolve at the bare name, release — never a version, never relayed, never in the feed — so a product under development (Pointview first) can exercise Profiles whose names and content are still moving. A registered `test` name resolves by its plain reference, `cp:test.contact`, to its current working document; `:N` is refused and so is publication. No exception to spec §7.1 or §9.3 is needed, because none of it is the Registry's: the registration, the form and the bare-name answer all belong to the workspace surface, which only an instance with `WORKSPACE_TEST` runs, so canon cannot do any of it by construction. The `test` policy text now says "Unpublished", not the old "Draft". Rulings given 10 October 2026 (`test-prefix-plan.md`).
 >
@@ -1135,7 +1137,7 @@ The two partition the reference grammar of spec §7.2 and never both answer one 
 - **Names its organization holds.** `WORKSPACE_ORGS` names one or more organizations by id (stable across the §8.4 rename act), and the rule is checked at every read and write against the allocation and organization rows the instance already mirrors from the snapshot — the name is registered, and the holder of its Prefix is one of those organizations. This makes "lives with its author" literal: an organization's host can never hold anyone else's drafts. A name released (`profile.discard` in the journal) or whose Prefix has moved (`allocation.transfer`) no longer qualifies; its draft goes **dark** — see below, where the rule is that nothing on this host is ever deleted automatically.
 - **`test.*` names.** Spec §7.1 reserves `test` "for local exercise, never globally resolvable", and spec §6.3's note names it as the place for "an author who needs to exercise an unpublished Profile against Nodes in private". Nothing under `test` is ever registered *at the Registry* or published, so no organization holds it and no mirror row can vouch for it: a `test.*` form is a draft that belongs to whoever runs the workspace, exists nowhere else, and is the whole of the research-and-development case — the Profile an implementer exercises before they hold a Prefix, or before they are ready for even the name to be public (registration is public, spec §7.3). `WORKSPACE_TEST=true` admits them. The software cannot tell a private host from a public one, so the setting is off unless set, the private runbook sets it, and the public one leaves it alone — because "never globally resolvable" is a statement about the Registry, but a public host serving `test.*` at a public URL is close enough to the line that it should be a choice someone made. A `test.*` form has no published versions to be compared with, so its pill says only "Unpublished · test". *(10 October)* A `test.*` name is registered on the host before a form is saved under it, and has the rest of a lifecycle there — see "`test.*` names on a workspace host" below.
 
-There is no third class. A workspace does not hold drafts for unregistered names under a real Prefix, nor for names under a Prefix nobody has been allocated: whose would `acme.foo` be, before anyone holds `acme`? Before allocation, the work is `test.*`; after registration, it is at the name its versions will occupy (§24). The road from one to the other is the author's, not the workspace's: when a Prefix is allocated and a name registered, the author saves the form under the new name — `Header.Name` changes, which is the one edit the move requires — and the `test.*` form is deleted or kept as the author likes. Nothing carries over automatically.
+There is no third class of the author's own work. (A *shared copy* of someone else's form is a different thing, admitted only by import and never editable here; see "Sharing a form", below.) A workspace does not hold drafts for unregistered names under a real Prefix, nor for names under a Prefix nobody has been allocated: whose would `acme.foo` be, before anyone holds `acme`? Before allocation, the work is `test.*`; after registration, it is at the name its versions will occupy (§24). The road from one to the other is the author's, not the workspace's: when a Prefix is allocated and a name registered, the author saves the form under the new name — `Header.Name` changes, which is the one edit the move requires — and the `test.*` form is deleted or kept as the author likes. Nothing carries over automatically.
 
 **Dark forms, and why a host never deletes one** *(ruled 25 September 2026)*. A form is **dark** when its name no longer qualifies: the name was released (`profile.discard`), its Prefix moved to another organization (`allocation.transfer`), the operator removed an organization from this host's configuration, or `test.*` forms are no longer admitted. `qualifies()` is consulted on every read and every write, so a dark form is already unreachable — nothing serves it, nothing lists it openly, and a save under that name is refused.
 
@@ -1168,7 +1170,7 @@ A workspace answer is unmistakably not a published version. The document is serv
 5. *Content that names the host.* A draft whose Channels or Defaults point at the host, or at any party's governance, conditions its own enactment. That is a matter of the document, not of where it is held, and §16's `profile.non-capture` check already says so; the client's save path runs lint before it saves. The workspace itself refuses no content, because the unpublished form is not a contract and a workspace that refused on taste would be the house style §16 was written to keep out.
 6. *On the Governor's side.* A Realm whose rules say "we bind Unpublished Profiles conveyed to us" has a rule of the first kind (spec §6.3); a Realm whose rules say "only Profiles from Padi's workspace" has a Profile restriction, which must be declared before admission, applied to every Node alike and named in every refusal (spec §5.3). The workspace is one conveyance among others and creates no new ground of refusal. The one dependence it does create — the `:unpublished` reference resolves at exactly one host, the author's — is the dependence the specification accepts for unpublished content, and a Governor that operates from the copy it took in (spec §7.4), which the `ETag` lets it pin, has no runtime dependence on the host at all.
 
-**What it is not.** Not a Registry surface: nothing it serves is a version, and nothing it holds is in the feed or under the chain. Not a private drafts service: everything it holds, anyone who can reach it can read. Not a place for other organizations' names. Not a substitute for publication, and not a development namespace — the draft lives at the name its versions will occupy, or under `test`, which is the reason §24 has none. Not Padi's: the same image, the same settings and the same runbook for every organization, and `cp.padi.io` is simply the first host that runs it.
+**What it is not.** Not a Registry surface: nothing it serves is a version, and nothing it holds is in the feed or under the chain. Not a private drafts service: everything it holds, anyone who can reach it can read. Not a place for other organizations' working forms: only for copies of them shared to it, marked as such and never editable here ("Sharing a form", below). Not a substitute for publication, and not a development namespace — the draft lives at the name its versions will occupy, or under `test`, which is the reason §24 has none. Not Padi's: the same image, the same settings and the same runbook for every organization, and `cp.padi.io` is simply the first host that runs it.
 
 **Conformance, stated for a host running both.** The §22 checklist row "SHALL NOT hold, serve, or answer for the content of an unpublished Profile" is met by the Registry surface, whose machine representations are byte-identical to canon's whether or not a workspace is beside it. The workspace beside it is the author's, is marked as such on every answer, and never appears in `/distribution/*`. A party checking the host checks the Registry surface with the same verifier as any other instance, and can tell a workspace answer from a Registry answer by the header alone.
 
@@ -1210,6 +1212,90 @@ Only a Profile path is relayed — a first path segment containing a dot, §4.4'
 *Release takes the form* *(ruled 10 October 2026)*. The 25 September ruling says a host never deletes a draft for a reason nobody decided. A release is the author deciding, with the workspace credential, so the form goes with the name. A `test` form left with no registration under it — possible only by hand — is dark (`test-not-registered`), reported and kept like any other.
 
 *For the specification.* "Local exercise" in spec §7.1 is a second place where the specification's silence about the Registry's interface shows (Q13). A proposed informative note for its editors: *"Local exercise" means that an implementation may let an author use names beneath `test` on a host they control: registered, changed and discarded at will, and resolved by that host's own consumers. Such names are never allocated, never published, never carried between Registries, and confer nothing on any other host.*
+
+**Sharing a form** *(built 11 October 2026; plan `share-plan.md`)*. Spec §7.3 leaves to the author how an unpublished Profile's content reaches a partner. The workspace now gives the author two ways to share a form, a link and a file, and gives a partner one way to take it in: **import**, at the partner's own workspace. Nothing becomes a version on the way, and the Registry takes no part.
+
+*Share.* Every form on `/workspace`, and every Unpublished page, carries Share. It offers two things:
+
+- **The link.** The form's own address: `https://<host>/<name>:unpublished`, or `https://<host>/test.<…>` for a `test` name. A line under it says the link works for whoever can reach this host. The software cannot tell a private host from a public one, so it says so rather than guessing.
+- **The file.** `GET /workspace/share/<name>`, downloaded as `<name>.cp.json`: a *carrier* (below).
+
+Share is a read. Like every read it needs no credential, changes nothing and records nothing. It is shown to every viewer, because the page it sits on is already open to every viewer. A registered `test` name with nothing saved has nothing to share, so it shows no Share.
+
+*The carrier.* A carrier is one JSON object: `carrier: "cnscp-share/1"`; `shared: { at, from, via, operator }`; and `items`, each `{ name, kind, etag, updated_at, document }`.
+
+- **`document`** is the bytes `GET /<name>:unpublished` serves: the 2026 shape, `Status: Unpublished`, with no `Version` and no `Pub Date`.
+- **`kind`** is `unpublished` or `test`.
+- **`etag`** is the form's hash. It catches damage in transit, not forgery, the line §20.2 draws for `Content-Digest`. Whether a carrier should be signed is Q15.
+- **`from`** is the host the form was first shared from, and **`via`** lists the hosts it has passed through since, so a re-shared copy keeps its chain of hands.
+
+Share writes one item per carrier. The format allows up to fifty, so a later "share all" needs no second format.
+
+Import also accepts a bare 2026 document, the way authors keep working copies on disk. Its origin is then recorded as unknown.
+
+A carrier never holds a published version (versions travel with their chain), a dark form, a credential, or anything that depends on who it is for. The same Share gives every recipient the same file.
+
+*Import.* `/workspace` carries an **Import** pill at the top. It opens a panel where the receiver pastes a link or chooses a file, then sees a preview, then imports. The panel asks for the host's workspace credential, keeps it in the page's memory only, and sends it as `Authorization: Bearer` to `POST /workspace/import`. An instance has no sessions or cookies by design. This panel is the one script on any page this design renders; Share and everything else stay plain links and forms.
+
+`POST /workspace/import` takes a carrier, a bare document, or `{ "link": … }`. It previews unless asked to apply (`"apply": true`) and answers one row per item. The outcomes are:
+
+- **new**
+- **identical**: nothing to do.
+- **differs**: carries the held form's `current` ETag. Replacing it needs that ETag back in `replace`, so a form can only be overwritten by someone who has seen what it is overwriting.
+- **refused, with the reason:**
+  - `conflicts-own`: the host's own form or its own `test` name. A host never overwrites its own work with someone else's.
+  - `not-registered` in this host's mirror.
+  - `test-not-admitted`.
+  - `name-mismatch`: `Header.Name` is not `name`.
+  - `hash-mismatch`.
+  - `not-a-document`.
+
+Each item stands or falls on its own.
+
+*Importing by link.* The importing host fetches the link itself, so the origin is verified by TLS rather than claimed, and the copy records that. The fetch is held to narrow terms:
+
+- HTTPS only. A host on a developer's machine may admit plain HTTP with `WORKSPACE_IMPORT_HTTP=true`, which is off unless set.
+- Only the two shapes a Share link takes.
+- No redirect followed.
+- 256 KB at most, ten seconds at most.
+- The answer must carry `x-cp-surface: workspace` and `x-cp-status: unpublished`, and its `ETag` must be the hash of what it carries.
+- Only on a request that already carries the workspace credential.
+
+A host with no route to the author's host fails the fetch, and the panel says to use the file, which is what the file is for.
+
+*What an import creates* depends on whose name it is:
+
+- **A name this host's `WORKSPACE_ORGS` hold.** For example, the author's own second host inside a lab. The import is an ordinary save: own work, editable, and `updated_by` records the import and its origin.
+- **Anyone else's name, or a `test` name.** The import creates a **shared copy**, a third class beside the two above.
+
+  A shared copy is admitted only by import, and only when the mirror shows the name registered, under any holder. The holder shown is the one the mirror records, never the one the file claims.
+
+  It is kept as received, pinned to the hash it arrived with. It is never edited in place: a `PUT` answers `409 workspace.shared-copy-read-only`. A later import replaces it, after the same preview.
+
+  It is removed only deliberately, by `DELETE` under the credential. If its name is released or its Prefix moves, it goes dark and is reported, never deleted, by the rule of 25 September.
+
+  It is served at the same addresses and with the same markings as any form, plus `x-cp-shared-from: <origin>`. Its page carries a banner: *"A copy of the author's working form, shared from <origin> on <date>. The author's current form may differ. Connections bound against it are provisional (spec §6.3)."* The banner also says whether this host verified the origin by fetching it or took it as stated in a file. Its pill reads **Unpublished · shared**.
+
+  A `test` shared copy is registered on this host as a `test` name, resolves at its bare name like any `test` name, and claims nothing anywhere else.
+
+  A copy imported by link offers **Check for update**: the same import, by the same link, previewed first. It never runs on a schedule.
+
+*Why this does not bend §5.3.* Taking the grounds above in turn:
+
+1. Nothing shared becomes a version: a shared copy is never selected by a bare real name, never on the legacy alias, and never cached as immutable.
+2. There is still one form per name per host, and every reader at that host gets the same bytes. Copies on different hosts may lag the author, but that is a difference in time, which is what "provisional" already means, and each copy names its hash so anyone can compare it with the author's current form. Share takes no input about its recipient, so it cannot produce a different document for each partner.
+3. Import has no path to `profile` or `profile_version`, so the Registry surface stays byte-identical to canon's with shared copies beside it.
+4. Import is the receiver's act: the author's host cannot push, cannot refuse, and acts for nobody.
+5. A Realm rule "only Profiles shared from X" is a Profile restriction, declared and applied as spec §5.3 already requires.
+
+*Disclosure.* A shared copy is an open read at the partner's host. That suits the duty a binding Governor already carries, to publish what it took in "available to any party without condition" (spec §6.3). Inside a security boundary, "any party" can reach only as far as the boundary, which is the Governor's question, not the host's.
+
+*Disconnected Realms.* A file needs no route between the two hosts, but on a disconnected host it still needs something to land on:
+
+- `test` names need a host that boots with no upstream, which is not yet built.
+- Real names need the host's mirror to show the registration, which offline means carrying the journal on media.
+
+Both are later steps, each with its own plan.
 
 **Still to come:** the cut-over of `cp.padi.io` from the 0.11.0 server, and Q14's second form of the credential.
 
@@ -1347,6 +1433,7 @@ Section renumbering in the spec: Header §6.4→§6.6, worked example §6.6→§
 
 13. **Should the specification standardize the Registry's HTTP interface, and reserve the words it needs? — for OSTERA.** The spec defines names and Profiles and requires (§7.4) that third parties can run local instances, but says nothing about the URL a Profile resolves at, the path a feed lives on, or the words a host's own paths take out of the namespace. This design supplies all three as convention (§4.4, §19, §20.1, §3.2). Surfaced 13 Sept 2026 when `/account` and `/auth` (§15.3) had to be withheld as Prefixes a day after the paths existed. Two readings: (a) the interface is an implementation detail, so reserved words stay operator policy, published with reasons, and only the spec's own vocabulary (`cp`, `cns`, `realm`) joins `example` and `test`; (b) the interface is part of the standard — a normative appendix with the resolution URL form, the feed paths, and a short reserved-word list (`account`, `auth`, `profiles`, `distribution`, `health`, `operator`, `console`, `assets`, `well-known`) that only grows by revision — so a follower can follow any instance and a person finds the same paths at every Registry. Anto's inclination is (b), for consistency across Registries; the working-group question is whether the specification wants to own an HTTP surface at all. Carried to OSTERA with the next revision. *(10 October)* A second instance of the same silence: spec §7.1 reserves `test` "for local exercise" without saying what that means for an implementation; §20.3 now gives it a meaning, and proposes an informative note.
 14. **Workspace credentials by introspection.** The environment credential is the workspace's first form (§20.3): one token per label, on the host, reach fixed by `WORKSPACE_ORGS`. The second is a route at canon that answers who a bearer is and which organizations they belong to, after which a workspace applies the seam's membership rule from the allocation facts it mirrors and needs no credential of its own — and can tell an author from an assistant, which the first form cannot. A third, for a host inside a boundary that already has single sign-on in front of everything, reads the identity a trusted gateway asserts. One function, `mayWriteWorkspace`, so each is a drop-in. Wanted by the second organization to run a workspace; not before.
+15. **Signed carriers.** A carrier (§20.3, "Sharing a form") carries each form's hash, which catches damage in transit but not forgery. Imported by link, the importing host verifies the origin over TLS. Imported from a file, the origin is only stated, and the shared copy says so. A signature from the author's host would let a disconnected Realm check authorship too. Hash only for now (ruled 11 October 2026); worth revisiting when the journal on media exists, since that is when files become the main road into disconnected Realms.
 
 ---
 

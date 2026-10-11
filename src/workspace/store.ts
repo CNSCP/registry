@@ -46,11 +46,27 @@ export type WorkspaceForm = {
   content_hash: string;
   updated_at: Date;
   updated_by: string;
+  /** `own`: the author's working form, saved here. `shared`: a copy of someone else's, admitted only by import (§20.3, "Sharing a form"). */
+  kind: 'own' | 'shared';
+  /** Shared copies: the host it was first shared from (an origin URL), or null when it came as a bare document. */
+  origin: string | null;
+  /** Shared copies: true when this host fetched it from the origin over TLS; false when the origin is only stated. */
+  origin_verified: boolean | null;
+  /** Shared copies: hosts it passed through after the origin, oldest first. */
+  via: string[];
+  /** Shared copies imported by link: the link, for Check for update. */
+  source_link: string | null;
+  shared_at: Date | null;
 };
+
+/** Every column of a form, in one place, so no query forgets the shared-copy fields. */
+const FORM_COLUMNS = 'name, document, content_hash, updated_at, updated_by, kind, origin, origin_verified, via, source_link, shared_at';
 
 export type Qualification =
   | { ok: true; kind: 'held'; org: { id: string; name: string } }
   | { ok: true; kind: 'test' }
+  /** A shared copy (§20.3, "Sharing a form"): the holder is the one the mirror records, or null under `test`. */
+  | { ok: true; kind: 'shared'; holder: { id: string; name: string } | null }
   | { ok: false; reason: 'malformed' | 'not-registered' | 'not-held' | 'test-not-admitted' | 'test-not-registered'; detail: string };
 
 /**
@@ -58,7 +74,12 @@ export type Qualification =
  * never from the form's own existence — a row whose name stopped qualifying
  * is dark, whatever the table says.
  */
-export async function qualifies(db: Queryable, config: WorkspaceConfig, name: string): Promise<Qualification> {
+export async function qualifies(
+  db: Queryable,
+  config: WorkspaceConfig,
+  name: string,
+  as: 'own' | 'shared' = 'own',
+): Promise<Qualification> {
   const problem = nameProblem(name);
   if (problem) return { ok: false, reason: 'malformed', detail: `not a well-formed Profile name (${problem})` };
 
@@ -77,7 +98,7 @@ export async function qualifies(db: Queryable, config: WorkspaceConfig, name: st
         detail: `"${name}" is not registered on this host. Register it first — PUT /${name} with the workspace credential — as you would any name; under test the registration is this host's alone (spec §7.1).`,
       };
     }
-    return { ok: true, kind: 'test' };
+    return as === 'shared' ? { ok: true, kind: 'shared', holder: null } : { ok: true, kind: 'test' };
   }
 
   const { rows } = await db.query<{ org_id: string; holder: string }>(
@@ -96,6 +117,10 @@ export async function qualifies(db: Queryable, config: WorkspaceConfig, name: st
       detail: `"${name}" is not a registered name on this instance's mirror; a workspace holds forms for registered names only (spec §7.3), or under test.* (spec §7.1).`,
     };
   }
+  // A shared copy may be of ANY registered name: it is someone else's work by
+  // definition, kept here as received. The mirror still has to vouch for the
+  // name, and the holder shown is the mirror's, never the file's.
+  if (as === 'shared') return { ok: true, kind: 'shared', holder: { id: row.org_id, name: row.holder } };
   if (!config.orgs.includes(row.org_id)) {
     return {
       ok: false,
@@ -169,7 +194,7 @@ export async function releaseTestName(db: Queryable, name: string): Promise<bool
 
 export async function getForm(db: Queryable, name: string): Promise<WorkspaceForm | null> {
   const { rows } = await db.query<WorkspaceForm>(
-    `SELECT name, document, content_hash, updated_at, updated_by FROM workspace_profile WHERE name = $1`,
+    `SELECT ${FORM_COLUMNS} FROM workspace_profile WHERE name = $1`,
     [name],
   );
   return rows[0] ?? null;
@@ -187,7 +212,8 @@ export type SaveRefusal =
   | { refused: 'name-mismatch'; detail: string }
   | { refused: 'precondition-required'; detail: string }
   | { refused: 'precondition-failed'; detail: string; current: string }
-  | { refused: 'nothing-to-match'; detail: string };
+  | { refused: 'nothing-to-match'; detail: string }
+  | { refused: 'shared-copy-read-only'; detail: string };
 
 export type SaveResult = { created: boolean; form: WorkspaceForm };
 
@@ -254,6 +280,7 @@ export async function saveForm(
   }
 
   const existing = await getForm(db, name);
+  if (existing?.kind === 'shared') return sharedReadOnly(existing);
   if (existing) {
     if (options.ifMatch === undefined) {
       return {
@@ -280,7 +307,7 @@ export async function saveForm(
      ON CONFLICT (name) DO UPDATE
        SET document = EXCLUDED.document, content_hash = EXCLUDED.content_hash,
            updated_at = now(), updated_by = EXCLUDED.updated_by
-     RETURNING name, document, content_hash, updated_at, updated_by`,
+     RETURNING ${FORM_COLUMNS}`,
     [name, JSON.stringify(document), hash, options.by],
   );
   return { created: existing === null, form: rows[0]! };
@@ -356,10 +383,10 @@ export type FormListing = WorkspaceForm & { qualification: Qualification };
 /** Every form this workspace holds, each with whether it still qualifies — for the `/workspace` index. */
 export async function listForms(db: Queryable, config: WorkspaceConfig): Promise<FormListing[]> {
   const { rows } = await db.query<WorkspaceForm>(
-    `SELECT name, document, content_hash, updated_at, updated_by FROM workspace_profile ORDER BY name`,
+    `SELECT ${FORM_COLUMNS} FROM workspace_profile ORDER BY name`,
   );
   const out: FormListing[] = [];
-  for (const form of rows) out.push({ ...form, qualification: await qualifies(db, config, form.name) });
+  for (const form of rows) out.push({ ...form, qualification: await qualifies(db, config, form.name, form.kind) });
   return out;
 }
 
@@ -423,4 +450,62 @@ export async function holders(db: Queryable, config: WorkspaceConfig): Promise<{
   const { rows } = await db.query<{ id: string; name: string }>(`SELECT id, name FROM organization WHERE id = ANY($1::uuid[])`, [config.orgs]);
   const known = new Map(rows.map((r) => [r.id, r.name]));
   return config.orgs.map((id) => ({ id, name: known.get(id) ?? null }));
+}
+
+// --- shared copies (§20.3, "Sharing a form") ---------------------------------
+
+/** The refusal a save gets over a shared copy: it is someone else's work, kept as received. */
+export function sharedReadOnly(form: WorkspaceForm): SaveRefusal {
+  return {
+    refused: 'shared-copy-read-only',
+    detail:
+      `The form for "${form.name}" on this host is a shared copy${form.origin ? ` from ${form.origin}` : ''}, kept as received and never edited here. ` +
+      'A newer import replaces it; to work on it yourself, register a name of your own and save there.',
+  };
+}
+
+export type SharedMeta = {
+  origin: string | null;
+  verified: boolean;
+  via: string[];
+  link: string | null;
+  by: string;
+};
+
+/**
+ * Write a shared copy. The caller has run the import's checks; this writes,
+ * and for a `test` name registers it here in the same statement.
+ *
+ * The `WHERE kind = 'shared'` on the update is the last line of defence for
+ * the rule that a host never overwrites its own work with someone else's: if
+ * an own form appeared under this name between preview and apply, nothing is
+ * written and null comes back.
+ */
+export async function writeSharedCopy(
+  db: Queryable,
+  name: string,
+  document: Record<string, unknown>,
+  meta: SharedMeta,
+): Promise<WorkspaceForm | null> {
+  const stored = intake(document);
+  const hash = contentHash(stored);
+  const registerTest = tlpOf(name) === 'test';
+  const { rows } = await db.query<WorkspaceForm>(
+    `WITH reg AS (
+       INSERT INTO workspace_test_name (name, registered_by)
+       SELECT $1, $4 WHERE $9::boolean
+       ON CONFLICT (name) DO NOTHING
+     )
+     INSERT INTO workspace_profile (name, document, content_hash, updated_at, updated_by, kind, origin, origin_verified, via, source_link, shared_at)
+     VALUES ($1, $2, $3, now(), $4, 'shared', $5, $6, $7, $8, now())
+     ON CONFLICT (name) DO UPDATE
+       SET document = EXCLUDED.document, content_hash = EXCLUDED.content_hash,
+           updated_at = now(), updated_by = EXCLUDED.updated_by,
+           origin = EXCLUDED.origin, origin_verified = EXCLUDED.origin_verified,
+           via = EXCLUDED.via, source_link = EXCLUDED.source_link, shared_at = now()
+       WHERE workspace_profile.kind = 'shared'
+     RETURNING ${FORM_COLUMNS}`,
+    [name, JSON.stringify(stored), hash, meta.by, meta.origin, meta.verified, meta.via, meta.link, registerTest],
+  );
+  return rows[0] ?? null;
 }

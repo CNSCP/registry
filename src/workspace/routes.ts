@@ -50,6 +50,8 @@ import { parseProfileVersion } from '../profile/spec2026.ts';
 import { instanceRefusal } from '../distribution/routes.ts';
 import type { WriteHandler } from '../distribution/forward.ts';
 import { mayWriteWorkspace, signature, type WorkspaceCredential } from './credential.ts';
+import { buildCarrier, fetchLink as realFetchLink, incomingFromLink, originOf, parseIncoming, parseLink, type IncomingSet, type LinkFetch } from './carrier.ts';
+import { importSet, type ImportRow } from './share.ts';
 import {
   darkForms,
   formETag,
@@ -64,6 +66,7 @@ import {
   releaseTestName,
   removeForm,
   saveForm,
+  sharedReadOnly,
   testRegistration,
   testRegistrations,
   type DarkForm,
@@ -101,6 +104,16 @@ export type WorkspaceDeps = {
    */
   onRegistryWrite?: WriteHandler;
   html?: boolean;
+  /** The organization that runs this host, as canon records it (INSTANCE_OPERATOR); named in carriers. */
+  operator?: string | null;
+  /** This host's public origin, when the request cannot be trusted to say (PUBLIC_URL). Otherwise read from the request. */
+  publicUrl?: string;
+  /** Admit plain-HTTP Share links (WORKSPACE_IMPORT_HTTP) — for hosts on a developer's machine only. */
+  allowHttpLinks?: boolean;
+  /** How a link is fetched; the real fetch unless a test supplies one. */
+  fetchLink?: LinkFetch;
+  /** PUBLIC_BASE_PATH, so the Share link shown is the one a partner can open. */
+  basePath?: string;
 };
 
 /** The reserved dotless path for the index of forms a host holds (§4.4 routing rule). */
@@ -132,6 +145,7 @@ function qualificationRefusal(reply: FastifyReply, q: Exclude<Qualification, { o
 /** The pill's note: where the form stands against what is published (§20.3). */
 async function noteFor(db: Queryable, form: WorkspaceForm, q: Qualification): Promise<string | null> {
   if (q.ok && q.kind === 'test') return 'test';
+  if (q.ok && q.kind === 'shared') return 'shared';
   const moved = await movedOnSince(db, form);
   if (!moved) return null;
   return moved.same ? `same as v${moved.version}` : `moved on since v${moved.version}`;
@@ -141,6 +155,8 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
   const { db, config, credentials, upstream } = deps;
   const renderHtml = deps.html ?? true;
   const onRegistryWrite: WriteHandler = deps.onRegistryWrite ?? (async (_request, reply) => instanceRefusal(reply, upstream));
+  const linkFetch: LinkFetch = deps.fetchLink ?? realFetchLink;
+  const basePath = (deps.basePath ?? '').replace(/\/+$/, '');
 
   function mark(reply: FastifyReply, form: WorkspaceForm): void {
     reply
@@ -149,14 +165,34 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       .header('etag', formETag(form))
       .header('x-cp-surface', 'workspace')
       .header('x-cp-status', 'unpublished');
+    // A shared copy says whose it is on every answer, so a re-share by link
+    // keeps the chain of hands (§20.3, "Sharing a form").
+    if (form.kind === 'shared') {
+      reply.header('x-cp-shared-from', form.origin ?? 'unknown');
+      if (form.via.length > 0) reply.header('x-cp-shared-via', form.via.join(', '));
+    }
+  }
+
+  /** This host's origin as a partner reaches it: PUBLIC_URL, or what the request says. */
+  function hostOrigin(request: FastifyRequest): string {
+    if (deps.publicUrl) return originOf(deps.publicUrl) ?? deps.publicUrl;
+    const forwarded = request.headers['x-forwarded-proto'];
+    const proto = (typeof forwarded === 'string' ? forwarded.split(',')[0]!.trim() : '') || request.protocol;
+    return `${proto}://${request.host}`;
+  }
+
+  /** The Share link for a form: its own address on this host. */
+  function shareLink(request: FastifyRequest, name: string): string {
+    const path = tlpOf(name) === 'test' ? `/${name}` : `/${name}:unpublished`;
+    return `${hostOrigin(request)}${basePath}${path}`;
   }
 
   const hooks: WorkspaceHooks = {
     async unpublished(name, representation, reply) {
-      const q = await qualifies(db, config, name);
-      if (!q.ok) return false;
       const form = await getForm(db, name);
       if (!form) return false;
+      const q = await qualifies(db, config, name, form.kind);
+      if (!q.ok) return false;
 
       mark(reply, form);
       if (etagMatches(reply.request.headers['if-none-match'], formETag(form))) {
@@ -168,7 +204,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       if (representation === 'html' && renderHtml) {
         const registered = await resolveName(db, name);
         const note = await noteFor(db, form, q);
-        reply.type(MEDIA.html).send(renderForm(form, presented.document, q, registered?.versions ?? [], note));
+        reply.type(MEDIA.html).send(renderForm(form, presented.document, q, registered?.versions ?? [], note, { link: shareLink(reply.request, name) }));
         return true;
       }
       reply.type(MEDIA.spec2026).send(presented.text);
@@ -209,7 +245,8 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       }
       const presented = presentForm(form);
       if (representation === 'html' && renderHtml) {
-        reply.type(MEDIA.html).send(renderForm(form, presented.document, { ok: true, kind: 'test' }, [], 'test', { bare: true }));
+        const tq: Qualification = form.kind === 'shared' ? { ok: true, kind: 'shared', holder: null } : { ok: true, kind: 'test' };
+        reply.type(MEDIA.html).send(renderForm(form, presented.document, tq, [], form.kind === 'shared' ? 'shared' : 'test', { bare: true, link: shareLink(reply.request, name) }));
         return true;
       }
       reply.type(MEDIA.spec2026).send(presented.text);
@@ -228,10 +265,10 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
     async held(names) {
       const out = new Map<string, UnpublishedPill>();
       for (const name of await heldForms(db, names)) {
-        const q = await qualifies(db, config, name);
-        if (!q.ok) continue; // dark: released or transferred away, swept on the next sync
         const form = await getForm(db, name);
         if (!form) continue;
+        const q = await qualifies(db, config, name, form.kind);
+        if (!q.ok) continue; // dark: released or transferred away; reported, never deleted
         out.set(name, { href: `/${name}:unpublished`, note: await noteFor(db, form, q) });
       }
       return out;
@@ -290,6 +327,12 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       const credential = authenticate(request, reply);
       if (!credential) return reply;
 
+      const held = await getForm(db, name);
+      if (held?.kind === 'shared') {
+        const r = sharedReadOnly(held);
+        return refusal(reply, 409, `workspace.${r.refused}`, r.detail, { origin: held.origin });
+      }
+
       let q = await qualifies(db, config, name);
       if (!q.ok && q.reason === 'not-registered' && deps.catchUp) {
         await deps.catchUp();
@@ -306,6 +349,7 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         const status =
           result.refused === 'precondition-required' ? 428
           : result.refused === 'precondition-failed' || result.refused === 'nothing-to-match' ? 412
+          : result.refused === 'shared-copy-read-only' ? 409
           : 400;
         return refusal(reply, status, `workspace.${result.refused}`, result.detail, 'current' in result ? { current: result.current } : {});
       }
@@ -418,6 +462,82 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
       },
     });
 
+    // --- Sharing (§20.3, "Sharing a form") --------------------------------
+
+    // Share, as a file: a read like every other, open, recording nothing.
+    app.get<{ Params: { name: string } }>(`${WORKSPACE_PATH}/share/:name`, async (request, reply) => {
+      const { name } = request.params;
+      const form = await getForm(db, name);
+      // A dark form is not shared any more than it is served: its name may never have been public.
+      const q = form ? await qualifies(db, config, name, form.kind) : null;
+      if (!form || !q?.ok) return refusal(reply, 404, 'workspace.not-found', `This host holds no form for "${name}" that it will share.`);
+      const here = hostOrigin(request);
+      const carrier = buildCarrier({
+        at: new Date(),
+        from: form.kind === 'shared' ? form.origin : here,
+        via: form.kind === 'shared' ? [...form.via, here] : [],
+        operator: deps.operator ?? null,
+        items: [{ name, etag: formETag(form), updated_at: form.updated_at, document: presentForm(form).document }],
+      });
+      return reply
+        .header('cache-control', 'no-store')
+        .header('x-cp-surface', 'workspace')
+        .header('content-disposition', `attachment; filename="${name}.cp.json"`)
+        .type('application/json')
+        .send(JSON.stringify(carrier, null, 2));
+    });
+
+    // Import: a carrier, a bare document, or a link — previewed unless told to apply.
+    app.post(`${WORKSPACE_PATH}/import`, async (request, reply) => {
+      const credential = authenticate(request, reply);
+      if (!credential) return reply;
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+      if (!isObject(body)) return refusal(reply, 400, 'workspace.not-a-carrier', 'Import takes a JSON object.');
+
+      let set: IncomingSet;
+      if (typeof body['link'] === 'string') {
+        const target = parseLink(body['link'], { allowHttp: deps.allowHttpLinks === true });
+        if ('refused' in target) return refusal(reply, 400, `workspace.${target.refused}`, target.detail);
+        let answered;
+        try {
+          answered = await linkFetch(target.url);
+        } catch (error) {
+          return refusal(reply, 502, 'workspace.link-unreachable',
+            `This host could not fetch ${target.url.origin}: ${(error as Error).message}. Nothing was imported. If the two hosts cannot reach each other, ask for the file instead — Share offers both.`);
+        }
+        const incoming = incomingFromLink(target, answered);
+        if ('refused' in incoming) return refusal(reply, 422, `workspace.${incoming.refused}`, incoming.detail);
+        set = incoming;
+      } else {
+        const parsed = parseIncoming(isObject(body['source']) ? body['source'] : body);
+        if ('refused' in parsed) return refusal(reply, 400, `workspace.${parsed.refused}`, parsed.detail);
+        set = parsed;
+      }
+
+      const apply = body['apply'] === true || (request.query as Record<string, unknown>)['apply'] === 'true';
+      const replace: Record<string, string> = {};
+      if (isObject(body['replace'])) {
+        for (const [k, v] of Object.entries(body['replace'])) if (typeof v === 'string') replace[k] = v;
+      }
+      const items: ImportRow[] = await importSet(db, config, set, {
+        apply,
+        replace,
+        by: signature(credential),
+        ...(deps.catchUp ? { catchUp: deps.catchUp } : {}),
+      });
+      reply.header('cache-control', 'no-store').header('x-cp-surface', 'workspace');
+      return reply.code(200).send({
+        apply,
+        origin: { from: set.origin, verified: set.verified, via: set.via, ...(set.link ? { link: set.link } : {}) },
+        items,
+        applied: items.filter((i) => i.applied).length,
+        note: apply
+          ? 'Imported items are held here as the rows say: own work saved, or shared copies kept as received. None is a version (§20.3).'
+          : 'A preview: nothing has been written. Send the same with "apply": true — and, for each item that differs, its "current" ETag in "replace" — to import.',
+      });
+    });
+
     app.get(WORKSPACE_PATH, async (request, reply) => {
       const representation = negotiate(request.headers.accept, 'spec2026');
       // Dark forms are shown only to a request carrying the workspace
@@ -435,11 +555,24 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
         entries.push({
           name: form.name,
           href: `/${form.name}:unpublished`,
-          held_as: q.kind === 'held' ? q.org.name : 'test',
+          held_as: q.kind === 'held' ? q.org.name : q.kind === 'shared' ? 'shared copy' : 'test',
           content_hash: form.content_hash,
           updated_at: form.updated_at,
           updated_by: form.updated_by,
+          share: `/workspace/share/${form.name}`,
           ...(moved ? { published: moved } : {}),
+          ...(form.kind === 'shared'
+            ? {
+                shared: {
+                  holder: q.kind === 'shared' ? (q.holder?.name ?? null) : null,
+                  from: form.origin,
+                  verified: form.origin_verified === true,
+                  via: form.via,
+                  link: form.source_link,
+                  at: form.shared_at,
+                },
+              }
+            : {}),
         });
       }
       reply.header('cache-control', 'no-store').header('vary', 'Accept').header('x-cp-surface', 'workspace');
@@ -475,6 +608,11 @@ export function createWorkspace(deps: WorkspaceDeps): Workspace {
 
 function whereHeld(q: Qualification): string {
   if (q.ok && q.kind === 'held') return `held by <strong>${escape(q.org.name)}</strong> in its workspace on this host`;
+  if (q.ok && q.kind === 'shared') {
+    return q.holder
+      ? `kept on this host as a <strong>shared copy</strong> of a form whose name <strong>${escape(q.holder.name)}</strong> holds`
+      : 'kept on this host as a <strong>shared copy</strong> of a <code>test</code> form — local exercise, never globally resolvable (spec §7.1)';
+  }
   return 'held in the workspace on this host under the <code>test</code> Prefix — for local exercise, never globally resolvable (spec §7.1)';
 }
 
@@ -484,13 +622,13 @@ function renderForm(
   q: Qualification,
   versions: VersionSummary[],
   note: string | null,
-  options: { bare?: boolean } = {},
+  options: { bare?: boolean; link?: string } = {},
 ): string {
   const bare = options.bare === true;
   const cited = bare ? `cp:${form.name}` : `cp:${form.name}:unpublished`;
   const saved = `${escape(form.updated_at.toISOString().replace('T', ' ').slice(0, 16))} UTC by ${escape(form.updated_by)}`;
   const standing =
-    note === null || note === 'test'
+    note === null || note === 'test' || note === 'shared'
       ? ''
       : note.startsWith('same')
         ? `<p>Its contract fields are the same as ${escape(note.slice('same as '.length))}'s: nothing has changed since that publication.</p>`
@@ -513,14 +651,51 @@ function renderForm(
     `<h1><code>${escape(cited)}</code></h1>
      <p>Status: <strong>Unpublished</strong></p>
      ${versionStrip(form.name, versions, 'unpublished', { href: bare ? `/${form.name}` : `/${form.name}:unpublished`, note })}
-     <div class="callout unpublished"><strong>This is the working copy, not a contract.</strong>
+     ${form.kind === 'shared' ? sharedCallout(form, q) : `<div class="callout unpublished"><strong>This is the working copy, not a contract.</strong>
        It is ${whereHeld(q)} — not by the Registry, which never holds unpublished content (spec §7.3).
        It may change at any time, and a Connection bound against it is provisional (spec §6.3).
-       Last saved ${saved}.</div>
+       Last saved ${saved}.</div>`}
+     ${options.link ? shareBlock(form.name, options.link) : ''}
      ${standing}
      ${documentSections(document as Parameters<typeof documentSections>[0])}
      ${raw}`,
   );
+}
+
+const SHARE_STYLE = `<style>
+  details.share,details.import{margin:12px 0;border:1px solid var(--line,#ddd);border-radius:8px;padding:8px 12px}
+  details.share summary,details.import summary{cursor:pointer;font-weight:600}
+  details.share input,details.import input[type=text],details.import input[type=password]{width:100%;font-family:monospace;padding:6px;margin:4px 0}
+  .pill.import{cursor:pointer}
+  details.import table td,details.import table th{padding:4px 8px;vertical-align:top}
+  .verified{color:#1b7f3a}.stated{color:#9a6700}
+</style>`;
+
+/** Share, without a script: the link to select and copy, and the file to download (§20.3, "Sharing a form"). */
+function shareBlock(name: string, link: string): string {
+  return `${SHARE_STYLE}<details class="share"><summary>Share</summary>
+    <p><strong>Link.</strong> Works for whoever can reach this host; it always gives the form as last saved here.
+      <input type="text" readonly value="${escape(link)}" aria-label="Share link"></p>
+    <p><strong>File.</strong> <a href="/workspace/share/${escape(name)}" download="${escape(name)}.cp.json">Download ${escape(name)}.cp.json</a>
+      — a snapshot, for a partner who cannot reach this host. They take either in with <em>Import</em> on their own workspace.</p>
+  </details>`;
+}
+
+/** The banner a shared copy wears instead of the author's (§20.3). */
+function sharedCallout(form: WorkspaceForm, q: Qualification): string {
+  const when = form.shared_at ? escape(form.shared_at.toISOString().slice(0, 10)) : 'an earlier date';
+  const from = form.origin ? `<code>${escape(form.origin)}</code>` : 'a host it did not name (it arrived as a bare document)';
+  const via = form.via.length > 0 ? ` by way of ${form.via.map((v) => `<code>${escape(v)}</code>`).join(', ')}` : '';
+  const proof = form.origin_verified
+    ? '<span class="verified">Origin verified</span>: this host fetched it from there over TLS.'
+    : '<span class="stated">Origin as stated</span>: it came in a file, so where it came from is the file\'s claim, not something this host checked.';
+  const update = form.source_link
+    ? ` <a href="/workspace?import=${encodeURIComponent(form.source_link)}#import">Check for update</a> — the same link, previewed before anything changes.`
+    : '';
+  return `<div class="callout unpublished"><strong>A copy of the author's working form, shared from ${from}${via} on ${when}.</strong>
+     It is ${whereHeld(q)}. The author's current form may differ, and a Connection bound against it is provisional (spec §6.3).
+     It is never edited here: a newer import replaces it. ${proof}${update}
+     ETag <code>${escape(form.content_hash)}</code>.</div>`;
 }
 
 function renderTestUnsaved(name: string, registeredAt: Date): string {
@@ -537,31 +712,152 @@ function renderTestUnsaved(name: string, registeredAt: Date): string {
 function renderIndex(body: {
   orgs: { id: string; name: string | null }[];
   test: boolean;
-  forms: { name: string; href: string; held_as: string; updated_at: Date; updated_by: string; published?: { version: number; same: boolean } }[];
+  forms: {
+    name: string;
+    href: string;
+    held_as: string;
+    share: string;
+    updated_at: Date;
+    updated_by: string;
+    published?: { version: number; same: boolean };
+    shared?: { holder: string | null; from: string | null; verified: boolean; link: string | null };
+  }[];
 }): string {
   const rows = body.forms
-    .map(
-      (f) =>
-        `<tr><td><a href="${escape(f.href)}"><code>${escape(f.name)}</code></a></td>
-         <td>${escape(f.held_as)}</td>
-         <td>${f.published ? (f.published.same ? `same as v${f.published.version}` : `moved on since v${f.published.version}`) : '<em>none published</em>'}</td>
+    .map((f) => {
+      const standing = f.shared
+        ? `from ${f.shared.from ? `<code>${escape(f.shared.from)}</code>` : '<em>unknown origin</em>'} · ${f.shared.verified ? '<span class="verified">verified</span>' : '<span class="stated">as stated</span>'}${
+            f.shared.link ? ` · <a href="/workspace?import=${encodeURIComponent(f.shared.link)}#import">check for update</a>` : ''
+          }`
+        : f.published
+          ? f.published.same ? `same as v${f.published.version}` : `moved on since v${f.published.version}`
+          : '<em>none published</em>';
+      const heldAs = f.shared ? `shared copy${f.shared.holder ? ` · ${escape(f.shared.holder)}` : ' · test'}` : escape(f.held_as);
+      return `<tr><td><a href="${escape(f.href)}"><code>${escape(f.name)}</code></a></td>
+         <td>${heldAs}</td>
+         <td>${standing}</td>
          <td>${escape(f.updated_at.toISOString().slice(0, 10))}</td>
-         <td>${escape(f.updated_by)}</td></tr>`,
-    )
+         <td>${escape(f.updated_by)}</td>
+         <td><a href="${escape(f.href)}">link</a> · <a href="${escape(f.share)}" download="${escape(f.name)}.cp.json">file</a></td></tr>`;
+    })
     .join('');
   const serves = body.orgs.map((o) => `<strong>${escape(o.name ?? o.id)}</strong>`).join(', ');
 
   return page(
     'Workspace — unpublished forms on this host',
-    `<h1>Workspace</h1>
-     <p class="section-intro">The unpublished forms held on this host, as their authors saved them — the working copies
-       behind the names ${serves || 'no organization'} holds${body.test ? ', and <code>test.*</code> forms for local exercise' : ''}.
-       None is a version, and nothing here is in the distribution feed (§20.3).</p>
+    `${SHARE_STYLE}<h1>Workspace</h1>
+     <p class="versions"><a class="pill import" href="#import" onclick="document.getElementById('import').open=true">Import</a></p>
+     ${importPanel()}
+     <p class="section-intro">The unpublished forms held on this host — the working copies
+       behind the names ${serves || 'no organization'} holds${body.test ? ', <code>test.*</code> forms for local exercise' : ''},
+       and copies others have shared here. None is a version, and nothing here is in the distribution feed (§20.3).</p>
      ${body.forms.length === 0 ? '<p>No forms are held here yet.</p>' : `<div class="card"><table>
-       <tr><th>Name</th><th>Held as</th><th>Against published</th><th>Saved</th><th>By</th></tr>${rows}</table></div>`}
+       <tr><th>Name</th><th>Held as</th><th>Standing</th><th>Saved</th><th>By</th><th>Share</th></tr>${rows}</table></div>`}
      <p class="raw">A form is saved with <code>PUT /&lt;name&gt;:unpublished</code> under the workspace credential and read
-       by anyone with <code>GET</code>; the Registry surface on this host answers every other URL exactly as
-       the authoritative host does.</p>`,
+       by anyone with <code>GET</code>. Share gives its link, or a file to send; Import takes either in from a partner.
+       The Registry surface on this host answers every other URL exactly as the authoritative host does.</p>`,
     'workspace',
   );
 }
+
+/**
+ * The Import panel (§20.3, "Sharing a form"): paste a link or choose a file,
+ * preview, import. The one script on any page this design renders — it has
+ * to be, because the workspace credential travels as a bearer token and an
+ * instance keeps no session. The token stays in this page's memory: it is
+ * read from the field for each request and never stored.
+ */
+function importPanel(): string {
+  return `<details class="import" id="import"><summary>Import a shared Profile</summary>
+    <form action="/workspace/import" method="post" onsubmit="return false">
+      <p><label>Paste a Share link<br><input type="text" name="link" placeholder="https://host/name:unpublished  or  https://host/test.name" autocomplete="off"></label></p>
+      <p><label>…or choose a file someone sent you (<code>.cp.json</code>, or a Profile document)<br><input type="file" name="file" accept=".json,application/json"></label></p>
+      <p><label>This host's workspace credential<br><input type="password" name="token" autocomplete="off"></label></p>
+      <p><button type="button" data-act="preview">Preview</button> <button type="button" data-act="apply" disabled>Import</button></p>
+      <div class="result" aria-live="polite"></div>
+    </form>
+  </details>
+  <script>${IMPORT_SCRIPT}</script>`;
+}
+
+const IMPORT_SCRIPT = `(function () {
+  var panel = document.getElementById('import');
+  if (!panel) return;
+  var form = panel.querySelector('form');
+  var out = panel.querySelector('.result');
+  var applyButton = form.querySelector('[data-act=apply]');
+  var lastSource = null;
+  var params = new URLSearchParams(location.search);
+  if (params.get('import')) { panel.open = true; form.link.value = params.get('import'); }
+  if (location.hash === '#import') panel.open = true;
+
+  function el(tag, text, cls) { var e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+  function say(message, cls) { out.replaceChildren(el('p', message, cls)); }
+
+  async function source() {
+    var link = form.link.value.trim();
+    if (link) return { link: link };
+    var file = form.file.files[0];
+    if (!file) throw new Error('Paste a link or choose a file.');
+    var text = await file.text();
+    try { return { source: JSON.parse(text) }; } catch (e) { throw new Error('That file is not JSON, so it is not a carrier or a Profile document.'); }
+  }
+
+  async function send(body) {
+    var token = form.token.value.trim();
+    if (!token) throw new Error('Enter the workspace credential of this host: importing writes to the workspace.');
+    var r = await fetch(form.action, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+    var j = null;
+    try { j = await r.json(); } catch (e) { j = { message: 'The host did not answer with JSON (' + r.status + ').' }; }
+    if (r.status !== 200) throw new Error(j.message || ('Refused: ' + r.status));
+    return j;
+  }
+
+  function render(result) {
+    var o = result.origin || {};
+    var lead = el('p');
+    lead.textContent = (result.apply ? 'Imported ' + result.applied + ' of ' + result.items.length + '. ' : 'Preview — nothing written yet. ') +
+      'From ' + (o.from || 'an unknown origin') + (o.via && o.via.length ? ' by way of ' + o.via.join(', ') : '') +
+      (o.verified ? ' (verified: fetched over TLS).' : ' (as stated).');
+    var table = el('table');
+    var head = el('tr');
+    ['Name', 'Lands as', 'Outcome', 'Replace?', 'Detail'].forEach(function (h) { head.appendChild(el('th', h)); });
+    table.appendChild(head);
+    var differs = 0;
+    result.items.forEach(function (i) {
+      var tr = el('tr');
+      tr.appendChild(el('td', i.name));
+      tr.appendChild(el('td', i.as ? (i.as === 'own' ? 'own work' : 'shared copy') + (i.holder ? ' · ' + i.holder : '') : ''));
+      tr.appendChild(el('td', i.applied ? (i.outcome === 'new' ? 'imported' : 'replaced') : (i.refusal ? 'refused: ' + i.refusal : i.outcome)));
+      var cell = el('td');
+      if (!result.apply && i.outcome === 'differs' && i.current) {
+        var box = el('input'); box.type = 'checkbox'; box.dataset.name = i.name; box.dataset.current = i.current; cell.appendChild(box); differs++;
+      }
+      tr.appendChild(cell);
+      tr.appendChild(el('td', i.detail || ''));
+      table.appendChild(tr);
+    });
+    out.replaceChildren(lead, table);
+    if (!result.apply) {
+      var importable = result.items.some(function (i) { return i.outcome === 'new' || i.outcome === 'differs'; });
+      applyButton.disabled = !importable;
+      if (differs) out.appendChild(el('p', 'Tick Replace for a form held here that should give way to the imported one.'));
+    } else {
+      applyButton.disabled = true;
+      var again = el('p'); var a = el('a', 'Reload the workspace'); a.href = location.pathname; again.appendChild(a); out.appendChild(again);
+    }
+  }
+
+  form.querySelector('[data-act=preview]').addEventListener('click', async function () {
+    applyButton.disabled = true;
+    try { lastSource = await source(); say('Previewing…'); render(await send(lastSource)); }
+    catch (e) { say(e.message, 'stated'); }
+  });
+  applyButton.addEventListener('click', async function () {
+    if (!lastSource) return;
+    var replace = {};
+    out.querySelectorAll('input[type=checkbox]:checked').forEach(function (b) { replace[b.dataset.name] = b.dataset.current; });
+    var body = Object.assign({}, lastSource, { apply: true, replace: replace });
+    try { render(await send(body)); } catch (e) { say(e.message, 'stated'); }
+  });
+})();`;

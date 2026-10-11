@@ -1,7 +1,7 @@
 # Connection Profile Registry
 
 Part One (the allocation spine) and the Profile serialization mappers.
-Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.24.
+Design: [`REGISTRY-DESIGN.md`](REGISTRY-DESIGN.md) v0.25.
 
 **The normative anchor is the CNS/CP 2026 revision, published 16 September 2026 at
 [github.com/CNSCP/specification](https://github.com/CNSCP/specification).** It is pinned by
@@ -158,6 +158,12 @@ Registry instance"), and the first Phase 1 delivery:
   Registry surface of a host running one stays byte-identical to canon (proven in test).
   Its table lives in its own migration set (`npm run migrate:workspace`), so canon's schema
   never gains it
+- **Sharing** ([`src/workspace/carrier.ts`](src/workspace/carrier.ts), [`share.ts`](src/workspace/share.ts)) —
+  §20.3, built 11 Oct. Share gives a form's link, or a `.cp.json` carrier file
+  (`GET /workspace/share/<name>`). Import, on any workspace (`POST /workspace/import`,
+  previewed first), takes either in. A partner's host holds the result as a **shared copy**:
+  pinned to the hash it arrived with, marked with its origin, never editable there, and
+  never a version. `npm run workspace -- share|import` does the same from a terminal
 - **Forwarding** ([`src/distribution/forward.ts`](src/distribution/forward.ts)) — §20.3,
   built 21 Sept: `FORWARD_WRITES=true` makes an instance relay a write on a Profile path to
   the authoritative host with the **caller's own** credential and hand the answer back
@@ -317,8 +323,11 @@ src/
     config.ts        WORKSPACE_ORGS / WORKSPACE_TEST
     credential.ts    the workspace credential (environment form; one function, so the next form is a drop-in)
     store.ts         qualifies · save/get/remove with If-Match · presentForm · movedOnSince · darkForms (reports; never deletes)
-    routes.ts        GET/PUT/DELETE /<name>:unpublished, /workspace, the pill and the banner
-test/                563 tests
+    routes.ts        GET/PUT/DELETE /<name>:unpublished, /workspace, Share and Import, the pill and the banner
+    carrier.ts       the .cp.json carrier; Share links and the narrow terms a link is fetched on
+    share.ts         import: preview or apply, item by item — own work or a shared copy, never over the host's own
+    cli.ts           npm run workspace -- share | import
+test/                649 tests
 ```
 
 ## Three disciplines the code depends on

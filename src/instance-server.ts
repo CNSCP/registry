@@ -34,6 +34,11 @@
  *                           prefix and strips it; every link the HTML writes carries it
  *   INSTANCE_OPERATOR       the organization id of whoever runs this host; the header shows
  *                           its name as canon records it (§19.5)
+ *   PUBLIC_URL              this host's public origin, e.g. https://cp.padi.io — named in the
+ *                           Share links and carriers it gives out (§20.3, "Sharing a form");
+ *                           read from the request when unset
+ *   WORKSPACE_IMPORT_HTTP   `true` to let Import fetch plain-HTTP Share links — for hosts on a
+ *                           developer's machine only; HTTPS otherwise, so origins are verified
  */
 
 import Fastify from 'fastify';
@@ -120,6 +125,10 @@ const workspace = workspaceConfig
       upstream,
       html,
       catchUp,
+      operator,
+      basePath: frame.basePath,
+      allowHttpLinks: /^(true|1|yes)$/i.test((process.env['WORKSPACE_IMPORT_HTTP'] ?? '').trim()),
+      ...(process.env['PUBLIC_URL'] ? { publicUrl: process.env['PUBLIC_URL'] } : {}),
       ...(forwarder ? { onRegistryWrite: forwarder } : {}),
     })
   : null;

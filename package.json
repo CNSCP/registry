@@ -30,7 +30,8 @@
     "mcp": "node --env-file-if-exists=.env --experimental-strip-types src/mcp/server.ts",
     "instance": "node --env-file-if-exists=.env --experimental-strip-types src/instance-server.ts",
     "verify-journal": "node --experimental-strip-types src/distribution/verify-cli.ts",
-    "anchor": "node --env-file-if-exists=.env --experimental-strip-types src/anchor/sign-cli.ts"
+    "anchor": "node --env-file-if-exists=.env --experimental-strip-types src/anchor/sign-cli.ts",
+    "workspace": "node --env-file-if-exists=.env --experimental-strip-types src/workspace/cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
