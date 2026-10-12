@@ -589,7 +589,7 @@ function renderBand(audience: Audience, email: string, csrf: string): string {
 
 function renderTabs(active: Tab, admin: boolean, band: string): string {
   const tabs: [Tab, string, string][] = [
-    ['profile', 'Profile', '/account'],
+    ['profile', 'Sign-ins', '/account'],
     ['memberships', 'Memberships', '/account/memberships'],
     ['credentials', 'Credentials', '/account/credentials'],
     ...(admin ? [['orgs', 'Organizations', '/account/orgs'] as [Tab, string, string]] : []),
@@ -602,7 +602,7 @@ function renderProfile(view: AccountView): string {
   const identities = view.identities.map((i) => `<tr><td>${escape(i.provider)}</td><td>${escape(i.email)}</td><td>${escape(i.displayName ?? '')}</td><td>${date(i.firstSeen)}</td><td>${date(i.lastSeen)}</td></tr>`).join('');
   return `<p>${escape(view.user.displayName ?? '')} &middot; <code>${escape(view.user.email)}</code></p>
 
-<h2>Identities</h2>
+<h2>Sign-ins</h2>
 <p class="section-intro">The sign-ins linked to this account. The Registry keeps no password; it asks Google or GitHub who you are.</p>
 <div class="card"><table><thead><tr><th>Provider</th><th>Email</th><th>Name</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${identities}</tbody></table></div>`;
 }

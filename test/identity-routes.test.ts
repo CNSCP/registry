@@ -403,7 +403,7 @@ describe('administering an organization on /account (§6.2)', () => {
 
   test('every tab is its own address, carries the tab bar with itself marked, and an act returns to its tab', async () => {
     const { j: anto } = await signIn('google');
-    for (const [url, label] of [['/account', 'Profile'], ['/account/memberships', 'Memberships'], ['/account/credentials', 'Credentials'], [`/account/orgs/${orgId}`, 'Organizations']]) {
+    for (const [url, label] of [['/account', 'Sign-ins'], ['/account/memberships', 'Memberships'], ['/account/credentials', 'Credentials'], [`/account/orgs/${orgId}`, 'Organizations']]) {
       const res = await app.inject({ method: 'GET', url, headers: anto.header() });
       assert.equal(res.statusCode, 200, url);
       assert.match(res.body, new RegExp(`<a class="active" href="[^"]+">${label}</a>`), url);
