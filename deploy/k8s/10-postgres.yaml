@@ -1,3 +1,7 @@
+#
+# This Postgres Instance has been replaced with a dedicated CloudSQL instance
+# in the cnscpio GCP project. ADuss 2026-10-11
+#
 # PostgreSQL 16 — a StatefulSet, deliberately simple.
 #
 # The workload justifies it: the whole namespace is kilobytes, writes are
@@ -5,59 +9,59 @@
 # an operator (CloudNativePG) is a fine upgrade later; nothing in the Registry
 # would notice. Backups are the CronJob in 40-backup.yaml.
 
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: cp-registry
-spec:
-  clusterIP: None
-  selector:
-    app: postgres
-  ports:
-    - port: 5432
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: postgres
-  namespace: cp-registry
-spec:
-  serviceName: postgres
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:16
-          envFrom:
-            - secretRef:
-                name: registry-db
-          ports:
-            - containerPort: 5432
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
-              subPath: pgdata
-          readinessProbe:
-            exec:
-              command: ['pg_isready', '-U', 'registry']
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          resources:
-            requests: { cpu: 100m, memory: 256Mi }
-            limits: { memory: 512Mi }
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ['ReadWriteOnce']
-        resources:
-          requests:
-            storage: 2Gi
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: postgres
+#   namespace: cp-registry
+# spec:
+#   clusterIP: None
+#   selector:
+#     app: postgres
+#   ports:
+#     - port: 5432
+# ---
+# apiVersion: apps/v1
+# kind: StatefulSet
+# metadata:
+#   name: postgres
+#   namespace: cp-registry
+# spec:
+#   serviceName: postgres
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: postgres
+#   template:
+#     metadata:
+#       labels:
+#         app: postgres
+#     spec:
+#       containers:
+#         - name: postgres
+#           image: postgres:16
+#           envFrom:
+#             - secretRef:
+#                 name: registry-db
+#           ports:
+#             - containerPort: 5432
+#           volumeMounts:
+#             - name: data
+#               mountPath: /var/lib/postgresql/data
+#               subPath: pgdata
+#           readinessProbe:
+#             exec:
+#               command: ['pg_isready', '-U', 'registry']
+#             initialDelaySeconds: 5
+#             periodSeconds: 5
+#           resources:
+#             requests: { cpu: 100m, memory: 256Mi }
+#             limits: { memory: 512Mi }
+#   volumeClaimTemplates:
+#     - metadata:
+#         name: data
+#       spec:
+#         accessModes: ['ReadWriteOnce']
+#         resources:
+#           requests:
+#             storage: 2Gi
