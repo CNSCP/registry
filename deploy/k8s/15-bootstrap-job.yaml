@@ -35,8 +35,10 @@ spec:
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_USER } }
             - name: POSTGRES_PASSWORD
               valueFrom: { secretKeyRef: { name: registry-db, key: POSTGRES_PASSWORD } }
+            - name: POSTGRES_HOST
+              value: 'db.gcp.cnscp.io'
             - name: DATABASE_URL
-              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/cp_registry'
+              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/cp_registry'
           command: ['/bin/sh', '-c']
           args:
             - |
