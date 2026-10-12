@@ -202,6 +202,16 @@ describe('the site frame (canon)', () => {
     assert.match(page, /The canonical registry of/);
     assert.doesNotMatch(page, /class="provenance/);
   });
+
+  test('Registry heads the right-hand group, before Catalog; the site\'s pages are on the left without it', async () => {
+    const page = await html(upstreamApp, '/padi.light');
+    const group = (cls: string) => {
+      const at = page.indexOf(`<nav class="${cls}"`);
+      return [...page.slice(at, page.indexOf('</nav>', at)).matchAll(/>([^<>]+)<\/a>/g)].map((m) => m[1]);
+    };
+    assert.deepEqual(group('site-nav'), ['Home', 'Specification', 'Legal', 'About', 'Contact']);
+    assert.deepEqual(group('service-nav').slice(0, 2), ['Registry', 'Catalog']);
+  });
 });
 
 describe('the instance frame', () => {

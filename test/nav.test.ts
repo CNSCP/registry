@@ -31,7 +31,7 @@ describe('the shared navigation (§4.4)', () => {
   test('SITE_NAV is the six, in order', () => {
     assert.deepEqual(
       SITE_NAV.map((i) => i.id),
-      ['home', 'registry', 'spec', 'legal', 'about', 'contact'],
+      ['home', 'spec', 'legal', 'about', 'contact', 'registry'],
     );
   });
 

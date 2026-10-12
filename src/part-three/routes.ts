@@ -772,15 +772,19 @@ const SITE_STYLE = `
  * `nav.json` when that repository is checked out beside this one, and skips
  * when it is not — the `verify-spec` pattern.
  *
- * `Registry` is this host's own root; everything else leaves.
+ * `Registry` is this host's own root; everything else leaves. It comes last,
+ * and on this host it is drawn at the head of the right-hand group rather
+ * than among the site's pages: Registry · Catalog · Workspace/Account is one
+ * unit (11 October 2026) — the Registry, its catalog, and the two scopes in
+ * which Profiles are managed here.
  */
 export const SITE_NAV: readonly { id: string; label: string; href: string }[] = [
   { id: 'home', label: 'Home', href: 'https://cnscp.io' },
-  { id: 'registry', label: 'Registry', href: '/' },
   { id: 'spec', label: 'Specification', href: 'https://github.com/CNSCP/specification' },
   { id: 'legal', label: 'Legal', href: 'https://cnscp.io/license/' },
   { id: 'about', label: 'About', href: 'https://cnscp.io/about.html' },
   { id: 'contact', label: 'Contact', href: 'https://cnscp.io/contact.html' },
+  { id: 'registry', label: 'Registry', href: '/' },
 ];
 
 /** This host's own surfaces, which exist nowhere else. */
@@ -936,10 +940,11 @@ function siteChrome(title: string, active: NavId | null, body: string): string {
 <header class="site-header"><div class="bar">
   <a class="brand" href="https://cnscp.io"><img src="https://cnscp.io/CNSCP-Square.png" alt=""><span>CNS/CP</span></a>
   <nav class="site-nav" aria-label="CNS/CP"><ul>
-    ${SITE_NAV.map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
+    ${SITE_NAV.filter((i) => i.id !== 'registry').map((i) => nav(i.id, i.href, i.label)).join('\n    ')}
   </ul></nav>
   <nav class="service-nav" aria-label="Registry"><ul>
-    ${SERVICE_NAV.filter((i) => (i.id !== 'account' || accountNav) && (i.id !== 'workspace' || workspaceNav))
+    ${[...SITE_NAV.filter((i) => i.id === 'registry'),
+      ...SERVICE_NAV.filter((i) => (i.id !== 'account' || accountNav) && (i.id !== 'workspace' || workspaceNav))]
       .map((i) => nav(i.id, i.href, i.label))
       .join('\n    ')}
   </ul></nav>
