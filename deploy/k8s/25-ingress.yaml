@@ -1,35 +1,61 @@
 ---
-apiVersion: networking.istio.io/v1beta1
-kind: VirtualService
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
 metadata:
   name: cnscpio-cp-registry
-  namespace: cp-registry
+  namespace: cnscp-registry
 spec:
-  gateways:
-  - default/cnscpio
-  hosts:
-  - cp.cnscp.io
-  http:
-  - match:
-    - uri:
-        prefix: /
-    route:
-    - destination:
-        host: registry
-        port:
-          number: 80
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`cp.cnscp.io`)
+      kind: Rule
+      services:
+        - name: registry
+          port: 80
+  tls:
+    secretName: cp-cnscp-io-ssl-certificate
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: cnscp-registry
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: cnscpio-cp-registry-http
+  namespace: cnscp-registry
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`cp.cnscp.io`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: registry
+          port: 80
 
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: cp-registry
-  namespace: istio-system
+  namespace: cnscp-registry
 spec:
   commonName: cp.cnscp.io
   dnsNames:
   - cp.cnscp.io
   issuerRef:
-    name: letsencrypt-http-production
+    name: letsencrypt-http
     kind: ClusterIssuer
   secretName: cp-cnscp-io-ssl-certificate

@@ -18,7 +18,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: registry-bootstrap
-  namespace: cp-registry
+  namespace: cnscp-registry
 spec:
   backoffLimit: 2
   template:
@@ -38,7 +38,7 @@ spec:
             - name: POSTGRES_HOST
               value: 'db.gcp.cnscp.io'
             - name: DATABASE_URL
-              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/cp_registry'
+              value: 'postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/cp_registry?sslmode=no-verify'
           command: ['/bin/sh', '-c']
           args:
             - |
